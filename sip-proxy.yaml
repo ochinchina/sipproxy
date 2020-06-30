@@ -1,0 +1,40 @@
+admin:
+  addr: ":8899"
+proxies:
+- name: bob@biloxi.example.com
+  listens:
+  - address: 127.0.0.1
+    udp-port: 7890
+    tcp-port: 7891
+    backends:
+    - udp://127.0.0.1:7990
+    - udp://127.0.0.1:7991
+  - address: 127.0.0.1
+    udp-port: 7892
+    tcp-port: 7893
+    dests:
+    - test.com
+    - example.com
+    def-route: false
+  - address: 127.0.0.1
+    udp-port: 7894
+    tcp-port: 7895
+    def-route: true
+  route:
+  - dests:
+    - test1
+    - test2
+    protocol: udp
+    nextHop: gold.com:1234
+  - dest: default
+    protocol: udp
+    nextHop: test.com:3456
+  hosts:
+  - name: test.com
+    ip: 10.0.0.1
+  - name: example.com
+    ip: 10.0.0.2
+hosts:
+- name: test.com
+  ip: 10.0.0.1
+
