@@ -15,12 +15,12 @@ type ProxyItem struct {
 type Proxy struct {
 	name           string
 	preConfigRoute  *PreConfigRoute
-	resolver	*HostResolver
+	resolver	*PreConfigHostResolver
 	items          []*ProxyItem
 	clientTransMgr *ClientTransportMgr
 }
 
-func NewProxy(name string, preConfigRoute *PreConfigRoute, resolver *HostResolver) *Proxy {
+func NewProxy(name string, preConfigRoute *PreConfigRoute, resolver *PreConfigHostResolver) *Proxy {
 	return &Proxy{name: name,
 	        preConfigRoute: preConfigRoute,
 		resolver: resolver,

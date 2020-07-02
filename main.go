@@ -103,7 +103,7 @@ func startProxies(c *cli.Context) error {
 	initLog(fileName, strLevel, logSize, backups)
 	for _, proxy := range config.Proxies {
 		preConfigRoute := createPreConfigRoute( proxy )
-		resolver := createHostResolver( config.Hosts, proxy )
+		resolver := createPreConfigHostResolver( config.Hosts, proxy )
 		log.Info("start sip proxy:", proxy.Name)
 		err = startProxy(proxy, preConfigRoute, resolver )
 		if err != nil {
@@ -115,7 +115,7 @@ func startProxies(c *cli.Context) error {
 	}
 }
 
-func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *HostResolver ) error {
+func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *PreConfigHostResolver ) error {
 	proxy := NewProxy(config.Name, preConfigRoute, resolver)
 	for _, listen := range config.Listens {
 		item, err := NewProxyItem(listen.Address,
@@ -150,8 +150,8 @@ func createPreConfigRoute( config ProxyConfig ) *PreConfigRoute {
 	return preConfigRoute
 }
 
-func createHostResolver( globalHostIPs []HostIp, config ProxyConfig ) *HostResolver {
-	resolver := NewHostResolver()
+func createPreConfigHostResolver( globalHostIPs []HostIp, config ProxyConfig ) *PreConfigHostResolver {
+	resolver := NewPreConfigHostResolver()
 	for _, hostInfo := range globalHostIPs {
 		resolver.AddHostIP( hostInfo.Name, hostInfo.Ip )
 	}

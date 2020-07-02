@@ -25,10 +25,11 @@ proxies:
     - test1
     - test2
     protocol: udp
-    nextHop: gold.com:1234
-  - dest: default
+    nexthop: gold.com:1234
+  - dests:
+    - default
     protocol: udp
-    nextHop: test.com:3456
+    nexthop: test.com:3456
   hosts:
   - name: test.com
     ip: 10.0.0.1

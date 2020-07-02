@@ -2,23 +2,36 @@ package main
 
 import (
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"net"
 	"net/url"
-	"sync/atomic"
+	"strings"
+	"sync"
 )
 
 type Backend interface {
 	Send(msg *Message) error
+	GetAddress() string
+	Close() 
 }
 
 type RoundRobinBackend struct {
-	index    int32
-	backends []Backend
+	sync.Mutex
+	index      int
+	backends   []Backend
+	backendMap map[string]Backend
 }
 
 type UDPBackend struct {
-	udpConn *net.UDPConn
+	address    string
+	udpConn    *net.UDPConn
 	msgChannel chan *Message
+}
+
+var dynamicHostResolver *DynamicHostResolver
+
+func init() {
+	dynamicHostResolver = NewDynamicHostResolver(2)
 }
 
 func CreateBackend(addresses []string) (Backend, error) {
@@ -33,11 +46,22 @@ func CreateBackend(addresses []string) (Backend, error) {
 		}
 
 		if u.Scheme == "udp" {
-			backend, err := NewUDPBackend(u.Host)
-			if err != nil {
-				return nil, err
+			pos := strings.LastIndex(u.Host, ":")
+			if pos != -1 {
+				host := u.Host[0:pos]
+				port := u.Host[pos+1:]
+				if isIPAddress(host) {
+					backend, err := NewUDPBackend(u.Host)
+					if err != nil {
+						return nil, err
+					}
+					rrBackend.AddBackend(backend)
+				} else {
+					dynamicHostResolver.ResolveHost(host, func(hostname string, newIPs []string, removedIPs []string) {
+						rrBackend.hostIPChanged("udp", hostname, newIPs, removedIPs, port)
+					})
+				}
 			}
-			rrBackend.AddBackend(backend)
 		} else {
 			return nil, fmt.Errorf("Unsupported protocol %s", u.Scheme)
 		}
@@ -45,6 +69,7 @@ func CreateBackend(addresses []string) (Backend, error) {
 	return rrBackend, nil
 
 }
+
 func NewUDPBackend(hostport string) (*UDPBackend, error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", hostport)
 	if err != nil {
@@ -55,7 +80,7 @@ func NewUDPBackend(hostport string) (*UDPBackend, error) {
 		return nil, err
 	}
 
-	b := &UDPBackend{udpConn: udpConn, msgChannel: make( chan *Message, 1000 ) }
+	b := &UDPBackend{address: hostport, udpConn: udpConn, msgChannel: make(chan *Message, 1000)}
 	go b.takeAndSendToBackend()
 	return b, nil
 }
@@ -65,21 +90,54 @@ func (b *UDPBackend) Send(msg *Message) error {
 	return nil
 }
 
+func (b *UDPBackend) GetAddress() string {
+	return b.address
+}
+
 func (b *UDPBackend) takeAndSendToBackend() {
 	for {
 		select {
-		case msg := <-b.msgChannel:
-			msg.Write( b.udpConn )
+		case msg, more := <-b.msgChannel:
+			if more {
+				msg.Write(b.udpConn)
+			} else {
+				return
+			}
 		}
 	}
 }
 
+func (b *UDPBackend) Close() {
+	close(b.msgChannel)
+}
+
 func NewRoundRobinBackend() *RoundRobinBackend {
-	return &RoundRobinBackend{index: 0, backends: make([]Backend, 0)}
+	return &RoundRobinBackend{index: 0,
+		backends:   make([]Backend, 0),
+		backendMap: make(map[string]Backend)}
 }
 
 func (rb *RoundRobinBackend) AddBackend(backend Backend) {
+	rb.Lock()
+	defer rb.Unlock()
 	rb.backends = append(rb.backends, backend)
+	rb.backendMap[backend.GetAddress()] = backend
+}
+
+func (rb *RoundRobinBackend) RemoveBackend(address string) {
+	rb.Lock()
+	defer rb.Unlock()
+	if _, ok := rb.backendMap[address]; ok {
+		for index, p := range rb.backends {
+			if address == p.GetAddress() {
+				p.Close()
+				backends := rb.backends[0:index]
+				backends = append(backends, rb.backends[index+1:]...)
+				rb.backends = backends
+				break
+			}
+		}
+	}
 }
 
 func (rb *RoundRobinBackend) Send(msg *Message) error {
@@ -90,13 +148,51 @@ func (rb *RoundRobinBackend) Send(msg *Message) error {
 	return backend.Send(msg)
 }
 
+func (rb *RoundRobinBackend) GetAddress() string {
+	return ""
+}
+
 func (rb *RoundRobinBackend) getNextBackend() (Backend, error) {
-	for {
-		old := atomic.LoadInt32( &rb.index )
-		if atomic.CompareAndSwapInt32(&rb.index, old, old+1) {
-			n := int32(len(rb.backends))
-			var index int32 = (old + 1) % n
-			return rb.backends[index], nil
+	rb.Lock()
+	defer rb.Unlock()
+	n := len(rb.backends)
+	if n <= 0 {
+		return nil, fmt.Errorf("No backend available")
+	}
+	rb.index = (rb.index + 1) % n
+	return rb.backends[rb.index], nil
+
+}
+
+func (rb *RoundRobinBackend) hostIPChanged(protocol string, hostname string, newIPs []string, removedIPs []string, port string) {
+	for _, ip := range newIPs {
+		log.WithFields( log.Fields{ "ip": ip } ).Info( "find a new IP for ", hostname )
+		if protocol == "udp" {
+			hostport := fmt.Sprintf("%s:%s", ip, port)
+			if isIPv6(ip) {
+				hostport = fmt.Sprintf("[%s]:%s", ip, port)
+			}
+			backend, err := NewUDPBackend(hostport)
+			if err == nil {
+				rb.AddBackend(backend)
+			}
 		}
+	}
+	for _, ip := range removedIPs {
+		log.WithFields( log.Fields{ "ip": ip }).Info( "remve ip for ", hostname )
+		hostport := fmt.Sprintf("%s:%s", ip, port)
+		if isIPv6(ip) {
+			hostport = fmt.Sprintf("[%s]:%s", ip, port)
+		}
+		rb.RemoveBackend(hostport)
+	}
+
+}
+
+func (rb *RoundRobinBackend) Close() {
+	rb.Lock()
+	defer rb.Unlock()
+	for _, p := range rb.backends {
+		p.Close()
 	}
 }
