@@ -168,12 +168,7 @@ func (r *DynamicHostResolver) addressResolved(hostname string, addrs []string, e
 	}
 }
 
-func (r *DynamicHostResolver) doResolve(addr string) ([]string, error) {
-	hostname, port, err := splitAddr(addr)
-
-	if err != nil {
-		return nil, err
-	}
+func (r *DynamicHostResolver) doResolve(hostname string) ([]string, error) {
 
 	ips, err := net.LookupIP(hostname)
 
@@ -187,7 +182,7 @@ func (r *DynamicHostResolver) doResolve(addr string) ([]string, error) {
 		if strings.Index(s, ":") != -1 {
 			s = fmt.Sprintf("[%s]", s)
 		}
-		result = append(result, fmt.Sprintf("%s:%s", s, port))
+		result = append(result, s )
 	}
 	return result, nil
 }
