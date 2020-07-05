@@ -1,7 +1,7 @@
 admin:
   addr: ":8899"
 proxies:
-- name: bob@biloxi.example.com
+- name: urn:service:sos
   listens:
   - address: 127.0.0.1
     udp-port: 7890

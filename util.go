@@ -64,6 +64,6 @@ func isIPAddress(addr string) bool {
 	return net.ParseIP(addr) != nil
 }
 
-func isIPv6( ip string) bool {
-	return strings.Index( ip, ":" ) != -1
+func isIPv6(ip string) bool {
+	return strings.Index(ip, ":") != -1
 }

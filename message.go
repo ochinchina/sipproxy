@@ -200,7 +200,7 @@ func (m *Message) GetHeaderInt(name string) (int, error) {
 func (m *Message) RemoveHeader(name string) (interface{}, error) {
 	for index, header := range m.headers {
 		if header.name == name {
-			m.headers = append(m.headers[0:index], m.headers[ index + 1:] ... ) 
+			m.headers = append(m.headers[0:index], m.headers[index+1:]...)
 			return header.value, nil
 		}
 	}
@@ -269,13 +269,14 @@ func (m *Message) findViaInsertPos() int {
 	}
 	return 0
 }
+
 // Add the Via header to the top of Via headers
 func (m *Message) AddVia(via *Via) {
 	pos := m.findViaInsertPos()
-	headers := make( []*Header, 0 )
-	headers = append( headers, m.headers[0:pos]... )
-	headers = append( headers, &Header{name: "Via", value: via} )
-	headers = append( headers, m.headers[pos:]...)
+	headers := make([]*Header, 0)
+	headers = append(headers, m.headers[0:pos]...)
+	headers = append(headers, &Header{name: "Via", value: via})
+	headers = append(headers, m.headers[pos:]...)
 	m.headers = headers
 }
 
@@ -311,7 +312,7 @@ func (m *Message) PopVia() error {
 		_, err := via.PopViaParam()
 		return err
 	} else {
-		_, err := m.RemoveHeader( "Via" )
+		_, err := m.RemoveHeader("Via")
 		return err
 	}
 }
@@ -322,7 +323,7 @@ func (m *Message) findRecordRoutePos() int {
 		return pos
 	}
 	pos_1, err_1 := m.findHeaderPos("From")
-	pos_2, err_2 := m.findHeaderPos( "Max-Forwards" )
+	pos_2, err_2 := m.findHeaderPos("Max-Forwards")
 	if err_1 == nil && err_2 == nil {
 		if pos_1 < pos_2 {
 			return pos_1
@@ -339,10 +340,10 @@ func (m *Message) findRecordRoutePos() int {
 
 func (m *Message) AddRecordRoute(recordRoute *RecordRoute) {
 	pos := m.findRecordRoutePos()
-	headers := make( []*Header, 0 )
-	headers = append( headers, m.headers[0:pos]... )
-	headers = append( headers, &Header{name: "Record-Route", value: recordRoute})
-	headers = append( headers, m.headers[pos:]...)
+	headers := make([]*Header, 0)
+	headers = append(headers, m.headers[0:pos]...)
+	headers = append(headers, &Header{name: "Record-Route", value: recordRoute})
+	headers = append(headers, m.headers[pos:]...)
 	m.headers = headers
 }
 

@@ -35,38 +35,38 @@ type ClientTransport interface {
 }
 
 type UDPClientTransport struct {
-	conn *net.UDPConn
+	conn       *net.UDPConn
 	msgChannel chan *Message
 }
 
 func NewUDPClientTransport(host string, port int) (*UDPClientTransport, error) {
 	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", host, port))
 	if err != nil {
-		log.WithFields( log.Fields{ "host": host, "port": port, "error": err } ).Error( "Fail to resolve udp host address" )
+		log.WithFields(log.Fields{"host": host, "port": port, "error": err}).Error("Fail to resolve udp host address")
 		return nil, err
 	}
 	conn, err := net.DialUDP("udp", nil, raddr)
 	if err != nil {
-		log.WithFields( log.Fields{ "host": host, "port": port, "error": err } ).Error( "Fail to dial UDP" )
+		log.WithFields(log.Fields{"host": host, "port": port, "error": err}).Error("Fail to dial UDP")
 		return nil, err
 	}
-	ut := &UDPClientTransport{conn: conn, msgChannel: make( chan *Message, 1000 ) }
+	ut := &UDPClientTransport{conn: conn, msgChannel: make(chan *Message, 1000)}
 	go ut.takeAndSendMessage()
 	return ut, nil
 }
 
 func (u *UDPClientTransport) Send(msg *Message) error {
 	u.msgChannel <- msg
-	return  nil
+	return nil
 }
 
 func (u *UDPClientTransport) takeAndSendMessage() {
 	for {
 		select {
 		case msg := <-u.msgChannel:
-			_, err := msg.Write( u.conn )
+			_, err := msg.Write(u.conn)
 			if err != nil {
-				log.WithFields( log.Fields{ "error": err } ).Error( "Fail to send message" )
+				log.WithFields(log.Fields{"error": err}).Error("Fail to send message")
 			}
 		}
 	}
@@ -85,7 +85,7 @@ func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int
 	c.Lock()
 	defer c.Unlock()
 
-	if strings.EqualFold( protocol, "udp" ) {
+	if strings.EqualFold(protocol, "udp") {
 		fullAddr := fmt.Sprintf("udp://%s:%d", host, port)
 		if trans, ok := c.transports[fullAddr]; ok {
 			return trans, nil
@@ -123,7 +123,7 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 	}
 
 	log.WithFields(log.Fields{"addr": u.addr, "port": u.port}).Info("Success to listen on UDP")
-	var msgChannel chan *Message = make(chan *Message, 1000 )
+	var msgChannel chan *Message = make(chan *Message, 1000)
 	go u.processMessage(msgChannel)
 	go func() {
 		buf := make([]byte, 1024*64)
@@ -138,7 +138,7 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 			address := peerAddr.IP.String()
 			port := peerAddr.Port
 			log.WithFields(log.Fields{"length": n, "address": address, "port": port}).Info("a UDP packet is received")
-			msg, err := u.parseMessage( address, port, buf)
+			msg, err := u.parseMessage(address, port, buf)
 			if err != nil {
 				log.Error("Fail to parse sip message ", string(buf))
 			} else {

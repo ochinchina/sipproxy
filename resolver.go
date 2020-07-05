@@ -2,12 +2,12 @@ package main
 
 import (
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	log "github.com/sirupsen/logrus"
 )
 
 type PreConfigHostResolver struct {
@@ -182,7 +182,7 @@ func (r *DynamicHostResolver) doResolve(hostname string) ([]string, error) {
 		if strings.Index(s, ":") != -1 {
 			s = fmt.Sprintf("[%s]", s)
 		}
-		result = append(result, s )
+		result = append(result, s)
 	}
 	return result, nil
 }

@@ -23,7 +23,11 @@ func ParseAddrSpec(addrSpec string) (*AddrSpec, error) {
 			return nil, err
 		}
 	} else {
-		return nil, errors.New("Unsupported aboluteURI scheme")
+		absoluteURI, err := ParseAbsoluteURI(addrSpec)
+		if err != nil {
+			return nil, err
+		}
+		return &AddrSpec{sipURI: nil, absoluteURI: absoluteURI}, nil
 	}
 }
 
@@ -36,6 +40,13 @@ func (as *AddrSpec) GetSIPURI() (*SIPURI, error) {
 		return nil, errors.New("addr-spec is not SIP URI")
 	}
 	return as.sipURI, nil
+}
+
+func (as *AddrSpec) GetAbsoluteURI() (*AbsoluteURI, error) {
+	if as.absoluteURI == nil {
+		return nil, errors.New("addr-spec is not absoluteURI")
+	}
+	return as.absoluteURI, nil
 }
 
 func (as *AddrSpec) Write(writer io.Writer) (int, error) {

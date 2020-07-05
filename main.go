@@ -11,9 +11,8 @@ import (
 )
 
 type HostIp struct {
-        Name string
-        Ip   string
-
+	Name string
+	Ip   string
 }
 
 type ProxyConfig struct {
@@ -102,20 +101,20 @@ func startProxies(c *cli.Context) error {
 	backups := c.Int("log-backups")
 	initLog(fileName, strLevel, logSize, backups)
 	for _, proxy := range config.Proxies {
-		preConfigRoute := createPreConfigRoute( proxy )
-		resolver := createPreConfigHostResolver( config.Hosts, proxy )
+		preConfigRoute := createPreConfigRoute(proxy)
+		resolver := createPreConfigHostResolver(config.Hosts, proxy)
 		log.Info("start sip proxy:", proxy.Name)
-		err = startProxy(proxy, preConfigRoute, resolver )
+		err = startProxy(proxy, preConfigRoute, resolver)
 		if err != nil {
 			return err
 		}
 	}
 	for {
-		time.Sleep(time.Duration(5*time.Second))
+		time.Sleep(time.Duration(5 * time.Second))
 	}
 }
 
-func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *PreConfigHostResolver ) error {
+func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *PreConfigHostResolver) error {
 	proxy := NewProxy(config.Name, preConfigRoute, resolver)
 	for _, listen := range config.Listens {
 		item, err := NewProxyItem(listen.Address,
@@ -132,31 +131,31 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 	}
 	err := proxy.Start()
 	if err == nil {
-		log.WithFields( log.Fields{ "name": config.Name }).Info("Succeed to start proxy" )
+		log.WithFields(log.Fields{"name": config.Name}).Info("Succeed to start proxy")
 	} else {
-		log.WithFields( log.Fields{ "name": config.Name }).Error("Fail to start proxy" )
+		log.WithFields(log.Fields{"name": config.Name}).Error("Fail to start proxy")
 	}
 	return err
 }
 
-func createPreConfigRoute( config ProxyConfig ) *PreConfigRoute {
+func createPreConfigRoute(config ProxyConfig) *PreConfigRoute {
 	preConfigRoute := NewPreConfigRoute()
 	for _, routeItem := range config.Route {
 		for _, dest := range routeItem.Dests {
-			preConfigRoute.AddRouteItem( routeItem.Protocol, dest, routeItem.NextHop )
+			preConfigRoute.AddRouteItem(routeItem.Protocol, dest, routeItem.NextHop)
 		}
 
 	}
 	return preConfigRoute
 }
 
-func createPreConfigHostResolver( globalHostIPs []HostIp, config ProxyConfig ) *PreConfigHostResolver {
+func createPreConfigHostResolver(globalHostIPs []HostIp, config ProxyConfig) *PreConfigHostResolver {
 	resolver := NewPreConfigHostResolver()
 	for _, hostInfo := range globalHostIPs {
-		resolver.AddHostIP( hostInfo.Name, hostInfo.Ip )
+		resolver.AddHostIP(hostInfo.Name, hostInfo.Ip)
 	}
 	for _, hostInfo := range config.Hosts {
-		resolver.AddHostIP( hostInfo.Name, hostInfo.Ip )
+		resolver.AddHostIP(hostInfo.Name, hostInfo.Ip)
 	}
 	return resolver
 }

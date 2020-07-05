@@ -57,7 +57,12 @@ func (p *Proxy) isMyMessage(msg *Message) bool {
 	}
 
 	userHost, err := to.GetUserHost()
-	return err == nil && p.name == userHost
+	if err == nil {
+		return p.name == userHost
+	}
+	absoluteURI, err := to.GetAbsoluteURI()
+	return err == nil && p.name == absoluteURI
+
 }
 
 func (p *Proxy) handleMessage(msg *Message, from *ProxyItem) {

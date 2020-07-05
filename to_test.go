@@ -15,3 +15,15 @@ func TestParseToHeader(t *testing.T) {
 		t.Fail()
 	}
 }
+
+func TestParseToHeaderWithAbsoluteURI(t *testing.T) {
+	to, err := ParseTo("<urn:service:sos>;tag=8321234356")
+	if err != nil {
+		t.Fail()
+	}
+	fmt.Println(to)
+	s, err := to.GetAbsoluteURI()
+	if err != nil || s != "urn:service:sos" {
+		t.Fail()
+	}
+}

@@ -82,14 +82,33 @@ func (t *To) AddParam(name, value string) {
 	t.params = append(t.params, KeyValue{Key: name, Value: value})
 }
 
-// GetUserHost Get the user and host with user@host format
-func (t *To) GetUserHost() (string, error) {
+func (t *To) GetAddrSpec() (*AddrSpec, error) {
 	addrSpec := t.addrSpec
 	if t.nameAddr != nil {
 		addrSpec = t.nameAddr.Addr
 	}
 	if addrSpec == nil {
-		return "", errors.New("no user&host found")
+		return nil, errors.New("no name-addr or addr-spec found")
+	}
+	return addrSpec, nil
+}
+func (t *To) GetAbsoluteURI() (string, error) {
+	addrSpec, err := t.GetAddrSpec()
+	if err != nil {
+		return "", err
+	}
+	absURI, err := addrSpec.GetAbsoluteURI()
+	if err != nil {
+		return "", err
+	}
+	return absURI.String(), nil
+}
+
+// GetUserHost Get the user and host with user@host format
+func (t *To) GetUserHost() (string, error) {
+	addrSpec, err := t.GetAddrSpec()
+	if err != nil {
+		return "", err
 	}
 	sipUri, err := addrSpec.GetSIPURI()
 	if err != nil {
@@ -100,17 +119,16 @@ func (t *To) GetUserHost() (string, error) {
 
 // GetHost Get the host
 func (t *To) GetHost() (string, error) {
-        addrSpec := t.addrSpec
-        if t.nameAddr != nil {
-                addrSpec = t.nameAddr.Addr
-        }
-        if addrSpec == nil {
-                return "", errors.New("no host found")
-        }
-        sipUri, err := addrSpec.GetSIPURI()
-        if err != nil {
-                return "", err
-        }
-        return sipUri.Host, nil
+	addrSpec := t.addrSpec
+	if t.nameAddr != nil {
+		addrSpec = t.nameAddr.Addr
+	}
+	if addrSpec == nil {
+		return "", errors.New("no host found")
+	}
+	sipUri, err := addrSpec.GetSIPURI()
+	if err != nil {
+		return "", err
+	}
+	return sipUri.Host, nil
 }
-

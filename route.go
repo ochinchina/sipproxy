@@ -65,11 +65,11 @@ func parseRouteParam(s string) (*RouteParam, error) {
 	return r, nil
 }
 
-func (r *Route) GetRouteParam( index int )(*RouteParam, error) {
-	if index < 0 || index >= len( r.routeParams ) {
-		return nil, fmt.Errorf( "index %d is out of bound", index )
+func (r *Route) GetRouteParam(index int) (*RouteParam, error) {
+	if index < 0 || index >= len(r.routeParams) {
+		return nil, fmt.Errorf("index %d is out of bound", index)
 	}
-	return r.routeParams[ index ], nil
+	return r.routeParams[index], nil
 }
 func (r *Route) PopRouteParam() (*RouteParam, error) {
 	if len(r.routeParams) > 0 {
