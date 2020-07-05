@@ -14,16 +14,16 @@ type ProxyItem struct {
 
 type Proxy struct {
 	name           string
-	preConfigRoute  *PreConfigRoute
-	resolver	*PreConfigHostResolver
+	preConfigRoute *PreConfigRoute
+	resolver       *PreConfigHostResolver
 	items          []*ProxyItem
 	clientTransMgr *ClientTransportMgr
 }
 
 func NewProxy(name string, preConfigRoute *PreConfigRoute, resolver *PreConfigHostResolver) *Proxy {
 	return &Proxy{name: name,
-	        preConfigRoute: preConfigRoute,
-		resolver: resolver,
+		preConfigRoute: preConfigRoute,
+		resolver:       resolver,
 		items:          make([]*ProxyItem, 0),
 		clientTransMgr: NewClientTransportMgr()}
 }
@@ -61,14 +61,14 @@ func (p *Proxy) isMyMessage(msg *Message) bool {
 }
 
 func (p *Proxy) handleMessage(msg *Message, from *ProxyItem) {
-	log.Info( msg )
+	log.Info(msg)
 	if msg.IsRequest() {
 		if p.isMyMessage(msg) {
-			log.Info( "it is my request" )
+			log.Info("it is my request")
 			p.sendToBackend(msg)
 		} else {
 			host, port, transport, err := p.getNextRequestHop(msg)
-			log.Info( "Not my request, get next hop, host=", host, ",port=", port, ",transport=", transport )
+			log.Info("Not my request, get next hop, host=", host, ",port=", port, ",transport=", transport)
 			if err != nil {
 				log.Error("Fail to find the next hop for request:", msg)
 			} else {
@@ -76,12 +76,12 @@ func (p *Proxy) handleMessage(msg *Message, from *ProxyItem) {
 			}
 		}
 	} else {
-		log.Info( "received a response" )
+		log.Info("received a response")
 		host, port, transport, err := p.getNextReponseHop(msg)
 		if err != nil {
 			log.Error("Fail to find the next hop for response:", msg)
 		} else {
-			log.WithFields( log.Fields{ "host": host, "port": port, "transport": transport }).Info( "Send response" )
+			log.WithFields(log.Fields{"host": host, "port": port, "transport": transport}).Info("Send response")
 			p.sendMessage(host, port, transport, msg)
 		}
 	}
@@ -113,7 +113,7 @@ func (p *Proxy) sendToBackend(msg *Message) {
 		msg.AddRecordRoute(recordRoute)
 		err = backendItem.backend.Send(msg)
 		if err != nil {
-			log.Error("Fail to send message to backend with error:", err)
+			log.WithFields(log.Fields{"error": err}).Error("Fail to send message to backend")
 		}
 	}
 
@@ -128,37 +128,37 @@ func (p *Proxy) findBackendProxyItem() *ProxyItem {
 	return nil
 }
 func (p *Proxy) getNextRequestHop(msg *Message) (host string, port int, transport string, err error) {
-	host, port, transport, err = p.getNextRequestHopByRoute( msg )
-	if err ==  nil {
+	host, port, transport, err = p.getNextRequestHopByRoute(msg)
+	if err == nil {
 		return host, port, transport, err
 	}
-	return p.getNextRequestHopByConfig( msg )
+	return p.getNextRequestHopByConfig(msg)
 
 }
 
-func (p *Proxy) getNextRequestHopByConfig( msg *Message) (host string, port int, transport string, err error) {
+func (p *Proxy) getNextRequestHopByConfig(msg *Message) (host string, port int, transport string, err error) {
 	to, err := msg.GetTo()
-        if err != nil {
-                log.Error("Fail to find the header To im message:", msg)
-                return "", 0, "", fmt.Errorf( "No To header in message" )
-        }
+	if err != nil {
+		log.Error("Fail to find the header To im message:", msg)
+		return "", 0, "", fmt.Errorf("No To header in message")
+	}
 	destHost, err := to.GetHost()
 	if err != nil {
 		log.Error("Fail to find the Host in header To of message:", msg)
-		return "", 0, "", fmt.Errorf( "Fail to find Host in To header of message" )
+		return "", 0, "", fmt.Errorf("Fail to find Host in To header of message")
 	}
-	transport, host, port, err = p.preConfigRoute.FindRoute( destHost )
+	transport, host, port, err = p.preConfigRoute.FindRoute(destHost)
 	return
 
 }
 
-func(P *Proxy) getNextRequestHopByRoute( msg *Message) (host string, port int, transport string, err error) {
+func (P *Proxy) getNextRequestHopByRoute(msg *Message) (host string, port int, transport string, err error) {
 
 	route, err := msg.GetRoute()
 	if err != nil {
 		return
 	}
-	routeParam, err := route.GetRouteParam( 0 )
+	routeParam, err := route.GetRouteParam(0)
 	if err != nil {
 		return
 	}
@@ -169,8 +169,8 @@ func(P *Proxy) getNextRequestHopByRoute( msg *Message) (host string, port int, t
 		transport = sipUri.GetTransport()
 		host = sipUri.Host
 		port = sipUri.GetPort()
-	}  else {
-		err = fmt.Errorf( "address %v is not a sip URI", addr )
+	} else {
+		err = fmt.Errorf("address %v is not a sip URI", addr)
 	}
 	return
 }
@@ -180,7 +180,7 @@ func (p *Proxy) getNextReponseHop(msg *Message) (host string, port int, transpor
 	if err != nil {
 		return
 	}
-	viaParam, err := via.GetParam( 0 )
+	viaParam, err := via.GetParam(0)
 	if err != nil {
 		return
 	}
@@ -206,7 +206,7 @@ func (p *Proxy) findClientTransport(host string, port int, transport string) (Cl
 }
 
 func (p *Proxy) sendMessage(host string, port int, transport string, msg *Message) {
-	ip, err := p.resolver.GetIp( host )
+	ip, err := p.resolver.GetIp(host)
 	if err != nil {
 		ip = host
 	}

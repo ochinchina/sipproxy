@@ -12,7 +12,7 @@ import (
 type Backend interface {
 	Send(msg *Message) error
 	GetAddress() string
-	Close() 
+	Close()
 }
 
 type RoundRobinBackend struct {
@@ -99,8 +99,14 @@ func (b *UDPBackend) takeAndSendToBackend() {
 		select {
 		case msg, more := <-b.msgChannel:
 			if more {
-				msg.Write(b.udpConn)
+				_, err := msg.Write(b.udpConn)
+				if err == nil {
+					log.WithFields(log.Fields{"address": b.address}).Info("Succeed send message to backend")
+				} else {
+					log.WithFields(log.Fields{"address": b.address}).Error("Fail to send message to backend")
+				}
 			} else {
+				log.WithFields(log.Fields{"address": b.address}).Info("No message to backend anymore")
 				return
 			}
 		}
@@ -143,6 +149,7 @@ func (rb *RoundRobinBackend) RemoveBackend(address string) {
 func (rb *RoundRobinBackend) Send(msg *Message) error {
 	backend, err := rb.getNextBackend()
 	if err != nil {
+		log.WithFields(log.Fields{"error": err}).Error("Fail to send message to any backend")
 		return err
 	}
 	return backend.Send(msg)
@@ -166,7 +173,7 @@ func (rb *RoundRobinBackend) getNextBackend() (Backend, error) {
 
 func (rb *RoundRobinBackend) hostIPChanged(protocol string, hostname string, newIPs []string, removedIPs []string, port string) {
 	for _, ip := range newIPs {
-		log.WithFields( log.Fields{ "ip": ip } ).Info( "find a new IP for ", hostname )
+		log.WithFields(log.Fields{"ip": ip}).Info("find a new IP for ", hostname)
 		if protocol == "udp" {
 			hostport := fmt.Sprintf("%s:%s", ip, port)
 			if isIPv6(ip) {
@@ -179,7 +186,7 @@ func (rb *RoundRobinBackend) hostIPChanged(protocol string, hostname string, new
 		}
 	}
 	for _, ip := range removedIPs {
-		log.WithFields( log.Fields{ "ip": ip }).Info( "remve ip for ", hostname )
+		log.WithFields(log.Fields{"ip": ip}).Info("remve ip for ", hostname)
 		hostport := fmt.Sprintf("%s:%s", ip, port)
 		if isIPv6(ip) {
 			hostport = fmt.Sprintf("[%s]:%s", ip, port)
