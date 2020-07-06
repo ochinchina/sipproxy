@@ -348,7 +348,7 @@ func (m *Message) AddRecordRoute(recordRoute *RecordRoute) {
 }
 
 func (m *Message) Write(writer io.Writer) (int, error) {
-	n, _ := m.encodeRequestLine(writer)
+	n, _ := m.encodeFirstLine(writer)
 	k, _ := m.encodeHeader(writer)
 	n += k
 	k, _ = fmt.Fprintf(writer, "Content-Length: %d\r\n\r\n", len(m.body))
@@ -358,9 +358,11 @@ func (m *Message) Write(writer io.Writer) (int, error) {
 	return n, err
 }
 
-func (m *Message) encodeRequestLine(writer io.Writer) (int, error) {
+func (m *Message) encodeFirstLine(writer io.Writer) (int, error) {
 	if m.request != nil {
 		return fmt.Fprintf(writer, "%s %s %s\r\n", m.request.method, m.request.uri, m.request.version)
+	} elif m.response != nil {
+		return fmt.Fprintf(writer, "%s %s %s\r\n", m.response.version, m.response.statusCode, m.response.reason )
 	}
 	return 0, nil
 }

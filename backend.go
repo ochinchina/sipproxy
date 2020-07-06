@@ -17,15 +17,14 @@ type Backend interface {
 
 type RoundRobinBackend struct {
 	sync.Mutex
+	msgChannel chan *Message
 	index      int
 	backends   []Backend
 	backendMap map[string]Backend
 }
 
 type UDPBackend struct {
-	address    string
-	udpConn    *net.UDPConn
-	msgChannel chan *Message
+	udpConn *net.UDPConn
 }
 
 var dynamicHostResolver *DynamicHostResolver
@@ -80,49 +79,77 @@ func NewUDPBackend(hostport string) (*UDPBackend, error) {
 		return nil, err
 	}
 
-	b := &UDPBackend{address: hostport, udpConn: udpConn, msgChannel: make(chan *Message, 1000)}
-	go b.takeAndSendToBackend()
+	b := &UDPBackend{udpConn: udpConn}
 	return b, nil
 }
 
 func (b *UDPBackend) Send(msg *Message) error {
-	b.msgChannel <- msg
-	return nil
+	n, err := msg.Write(b.udpConn)
+	if err == nil {
+		log.WithFields(log.Fields{"address": b.udpConn.RemoteAddr(), "bytes": n}).Info("Succeed send message to backend")
+	} else {
+		log.WithFields(log.Fields{"address": b.udpConn.RemoteAddr()}).Error("Fail to send message to backend")
+	}
+
+	return err
 }
 
 func (b *UDPBackend) GetAddress() string {
-	return b.address
+	return b.udpConn.RemoteAddr().String()
 }
 
-func (b *UDPBackend) takeAndSendToBackend() {
+func (b *UDPBackend) Close() {
+	err := b.udpConn.Close()
+	if err == nil {
+		log.WithFields(log.Fields{"address": b.udpConn.RemoteAddr()}).Info("Succeed to close udp backend")
+	} else {
+		log.WithFields(log.Fields{"address": b.udpConn.RemoteAddr()}).Error("Fail to close udp backend")
+	}
+}
+
+func NewRoundRobinBackend() *RoundRobinBackend {
+	rb := &RoundRobinBackend{msgChannel: make(chan *Message, 1000),
+		index:      0,
+		backends:   make([]Backend, 0),
+		backendMap: make(map[string]Backend)}
+	go rb.takeAndSendMessage()
+	return rb
+}
+
+func (rb *RoundRobinBackend) takeAndSendMessage() {
 	for {
 		select {
-		case msg, more := <-b.msgChannel:
+		case msg, more := <-rb.msgChannel:
 			if more {
-				_, err := msg.Write(b.udpConn)
-				if err == nil {
-					log.WithFields(log.Fields{"address": b.address}).Info("Succeed send message to backend")
-				} else {
-					log.WithFields(log.Fields{"address": b.address}).Error("Fail to send message to backend")
-				}
+				rb.doSendMessage(msg)
 			} else {
-				log.WithFields(log.Fields{"address": b.address}).Info("No message to backend anymore")
 				return
 			}
 		}
 	}
+
 }
 
-func (b *UDPBackend) Close() {
-	close(b.msgChannel)
-}
+func (rb *RoundRobinBackend) doSendMessage(msg *Message) {
+	index, err := rb.getNextBackendIndex()
+	if err != nil {
+		log.WithFields(log.Fields{"error": err}).Error("Fail to send message")
+		return
+	}
 
-func NewRoundRobinBackend() *RoundRobinBackend {
-	return &RoundRobinBackend{index: 0,
-		backends:   make([]Backend, 0),
-		backendMap: make(map[string]Backend)}
-}
+	n := rb.getBackendCount()
+	for ; n > 0; n-- {
+		backend, err := rb.getBackend(index)
+		index++
+		if err == nil {
+			err = backend.Send(msg)
+			if err == nil {
+				break
+			}
+		}
+	}
 
+}
 func (rb *RoundRobinBackend) AddBackend(backend Backend) {
 	rb.Lock()
 	defer rb.Unlock()
@@ -147,27 +174,39 @@ func (rb *RoundRobinBackend) RemoveBackend(address string) {
 }
 
 func (rb *RoundRobinBackend) Send(msg *Message) error {
-	backend, err := rb.getNextBackend()
-	if err != nil {
-		log.WithFields(log.Fields{"error": err}).Error("Fail to send message to any backend")
-		return err
-	}
-	return backend.Send(msg)
+	rb.msgChannel <- msg
+	return nil
 }
 
 func (rb *RoundRobinBackend) GetAddress() string {
 	return ""
 }
 
-func (rb *RoundRobinBackend) getNextBackend() (Backend, error) {
+func (rb *RoundRobinBackend) getNextBackendIndex() (int, error) {
 	rb.Lock()
 	defer rb.Unlock()
 	n := len(rb.backends)
 	if n <= 0 {
-		return nil, fmt.Errorf("No backend available")
+		return 0, fmt.Errorf("No backend available")
 	}
 	rb.index = (rb.index + 1) % n
-	return rb.backends[rb.index], nil
+	return rb.index, nil
+}
+
+func (rb *RoundRobinBackend) getBackend(index int) (Backend, error) {
+	rb.Lock()
+	defer rb.Unlock()
+	n := len(rb.backends)
+	if n <= 0 {
+		return nil, fmt.Errorf("No backend available at %d", index)
+	}
+	return rb.backends[index%n], nil
+}
+
+func (rb *RoundRobinBackend) getBackendCount() int {
+	rb.Lock()
+	defer rb.Unlock()
+	return len(rb.backends)
 
 }
 
