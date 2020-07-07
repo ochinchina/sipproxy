@@ -35,7 +35,7 @@ func init() {
 	dynamicHostResolver = NewDynamicHostResolver(2)
 }
 
-func CreateBackend(addresses []string) (Backend, error) {
+func CreateBackend(localhostport string, addresses []string) (Backend, error) {
 	if len(addresses) <= 0 {
 		return nil, nil
 	}
@@ -52,14 +52,14 @@ func CreateBackend(addresses []string) (Backend, error) {
 				host := u.Host[0:pos]
 				port := u.Host[pos+1:]
 				if isIPAddress(host) {
-					backend, err := NewUDPBackend(u.Host)
+					backend, err := NewUDPBackend( localhostport, u.Host)
 					if err != nil {
 						return nil, err
 					}
 					rrBackend.AddBackend(backend)
 				} else {
 					dynamicHostResolver.ResolveHost(host, func(hostname string, newIPs []string, removedIPs []string) {
-						rrBackend.hostIPChanged("udp", hostname, newIPs, removedIPs, port)
+						rrBackend.hostIPChanged("udp", localhostport, hostname, newIPs, removedIPs, port)
 					})
 				}
 			}
@@ -71,12 +71,12 @@ func CreateBackend(addresses []string) (Backend, error) {
 
 }
 
-func NewUDPBackend(hostport string) (*UDPBackend, error) {
+func NewUDPBackend( localhostport string, hostport string) (*UDPBackend, error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", hostport)
 	if err != nil {
 		return nil, err
 	}
-	addr, err := net.ResolveUDPAddr("udp", ":0")
+	addr, err := net.ResolveUDPAddr("udp", localhostport )
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +224,7 @@ func (rb *RoundRobinBackend) getBackendCount() int {
 
 }
 
-func (rb *RoundRobinBackend) hostIPChanged(protocol string, hostname string, newIPs []string, removedIPs []string, port string) {
+func (rb *RoundRobinBackend) hostIPChanged(protocol string, localhostport, hostname string, newIPs []string, removedIPs []string, port string) {
 	for _, ip := range newIPs {
 		log.WithFields(log.Fields{"ip": ip}).Info("find a new IP for ", hostname)
 		if protocol == "udp" {
@@ -232,7 +232,7 @@ func (rb *RoundRobinBackend) hostIPChanged(protocol string, hostname string, new
 			if isIPv6(ip) {
 				hostport = fmt.Sprintf("[%s]:%s", ip, port)
 			}
-			backend, err := NewUDPBackend(hostport)
+			backend, err := NewUDPBackend(localhostport, hostport)
 			if err == nil {
 				rb.AddBackend(backend)
 			}

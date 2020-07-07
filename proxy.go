@@ -234,7 +234,7 @@ func NewProxyItem(address string,
 	if udpPort > 0 {
 		transports = append(transports, NewUDPServerTransport(address, udpPort))
 	}
-	backend, err := CreateBackend(backends)
+	backend, err := CreateBackend( fmt.Sprintf( "%s:%d", address, udpPort ), backends)
 	if err != nil {
 		return nil, err
 	}
