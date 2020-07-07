@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"net"
@@ -24,7 +25,8 @@ type RoundRobinBackend struct {
 }
 
 type UDPBackend struct {
-	udpConn *net.UDPConn
+	backendAddr *net.UDPAddr
+	udpConn     *net.UDPConn
 }
 
 var dynamicHostResolver *DynamicHostResolver
@@ -79,23 +81,31 @@ func NewUDPBackend(hostport string) (*UDPBackend, error) {
 		return nil, err
 	}
 
-	b := &UDPBackend{udpConn: udpConn}
+	b := &UDPBackend{backendAddr: udpAddr, udpConn: udpConn}
 	return b, nil
 }
 
 func (b *UDPBackend) Send(msg *Message) error {
-	n, err := msg.Write(b.udpConn)
+	buf := bytes.NewBuffer(make([]byte, 0))
+	n, err := msg.Write(buf)
+
+	if err != nil {
+		log.Error("Fail to encode message")
+		return err
+	}
+
+	n, err = b.udpConn.WriteToUDP(buf.Bytes(), b.backendAddr)
 	if err == nil {
-		log.WithFields(log.Fields{"address": b.udpConn.RemoteAddr(), "bytes": n}).Info("Succeed send message to backend")
+		log.WithFields(log.Fields{"address": b.backendAddr, "bytes": n}).Info("Succeed send message to backend")
 	} else {
-		log.WithFields(log.Fields{"address": b.udpConn.RemoteAddr()}).Error("Fail to send message to backend")
+		log.WithFields(log.Fields{"address": b.backendAddr}).Error("Fail to send message to backend")
 	}
 
 	return err
 }
 
 func (b *UDPBackend) GetAddress() string {
-	return b.udpConn.RemoteAddr().String()
+	return b.backendAddr.String()
 }
 
 func (b *UDPBackend) Close() {

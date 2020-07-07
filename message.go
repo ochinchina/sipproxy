@@ -361,8 +361,8 @@ func (m *Message) Write(writer io.Writer) (int, error) {
 func (m *Message) encodeFirstLine(writer io.Writer) (int, error) {
 	if m.request != nil {
 		return fmt.Fprintf(writer, "%s %s %s\r\n", m.request.method, m.request.uri, m.request.version)
-	} elif m.response != nil {
-		return fmt.Fprintf(writer, "%s %s %s\r\n", m.response.version, m.response.statusCode, m.response.reason )
+	} else if m.response != nil {
+		return fmt.Fprintf(writer, "%s %s %s\r\n", m.response.version, m.response.statusCode, m.response.reason)
 	}
 	return 0, nil
 }
