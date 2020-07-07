@@ -76,7 +76,11 @@ func NewUDPBackend(hostport string) (*UDPBackend, error) {
 	if err != nil {
 		return nil, err
 	}
-	udpConn, err := net.DialUDP("udp", nil, udpAddr)
+	addr, err := net.ResolveUDPAddr("udp", ":0")
+	if err != nil {
+		return nil, err
+	}
+	udpConn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		return nil, err
 	}
