@@ -112,6 +112,7 @@ func (p *Proxy) sendToBackend(msg *Message) {
 
 		addr := NewAddrSpec()
 		addr.sipURI = &SIPURI{Scheme: "sip", Host: transport.GetAddress(), port: transport.GetPort()}
+		addr.sipURI.AddParameter( "lr", "")
 		nameAddr := &NameAddr{DisplayName: "", Addr: addr}
 		recRoute := NewRecRoute(nameAddr)
 		recordRoute := NewRecordRoute()
