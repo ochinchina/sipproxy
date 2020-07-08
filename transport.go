@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	log "github.com/sirupsen/logrus"
@@ -36,6 +37,7 @@ type ClientTransport interface {
 
 type UDPClientTransport struct {
 	conn       *net.UDPConn
+	remoteAddr  *net.UDPAddr
 	msgChannel chan *Message
 }
 
@@ -45,12 +47,13 @@ func NewUDPClientTransport(host string, port int) (*UDPClientTransport, error) {
 		log.WithFields(log.Fields{"host": host, "port": port, "error": err}).Error("Fail to resolve udp host address")
 		return nil, err
 	}
-	conn, err := net.DialUDP("udp", nil, raddr)
+        laddr, _:= net.ResolveUDPAddr("udp", ":0" )
+	conn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
 		log.WithFields(log.Fields{"host": host, "port": port, "error": err}).Error("Fail to dial UDP")
 		return nil, err
 	}
-	ut := &UDPClientTransport{conn: conn, msgChannel: make(chan *Message, 1000)}
+	ut := &UDPClientTransport{conn: conn, remoteAddr: raddr, msgChannel: make(chan *Message, 1000)}
 	go ut.takeAndSendMessage()
 	return ut, nil
 }
@@ -64,8 +67,12 @@ func (u *UDPClientTransport) takeAndSendMessage() {
 	for {
 		select {
 		case msg := <-u.msgChannel:
-			_, err := msg.Write(u.conn)
-			if err != nil {
+			buf := bytes.NewBuffer( make([]byte, 0 ) )
+			msg.Write( buf )
+			n, err := u.conn.WriteToUDP( buf.Bytes(), u.remoteAddr )
+			if err == nil {
+				log.WithFields( log.Fields{ "length": n, "address": u.remoteAddr }).Info( "Succeed to send message" )
+			} else {
 				log.WithFields(log.Fields{"error": err}).Error("Fail to send message")
 			}
 		}
@@ -130,7 +137,7 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 		for {
 			log.Info("try to read a packet")
 			n, peerAddr, err := conn.ReadFromUDP(buf)
-			log.Info("read a packet with length ", n)
+			log.WithFields( log.Fields{"length": n}).Info("read a packet with length")
 			if err != nil {
 				log.WithFields(log.Fields{"addr": u.addr, "port": u.port, "error": err}).Error("Fail to read data")
 				break
@@ -138,9 +145,10 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 			address := peerAddr.IP.String()
 			port := peerAddr.Port
 			log.WithFields(log.Fields{"length": n, "address": address, "port": port}).Info("a UDP packet is received")
-			msg, err := u.parseMessage(address, port, buf)
+                        b := buf[0:n]
+			msg, err := u.parseMessage(address, port, b)
 			if err != nil {
-				log.Error("Fail to parse sip message ", string(buf))
+				log.Error("Fail to parse sip message:\n", string(b))
 			} else {
 				msgChannel <- msg
 			}

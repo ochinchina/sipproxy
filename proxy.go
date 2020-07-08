@@ -82,6 +82,7 @@ func (p *Proxy) handleMessage(msg *Message, from *ProxyItem) {
 		}
 	} else {
 		log.Info("received a response")
+		msg.PopVia()
 		host, port, transport, err := p.getNextReponseHop(msg)
 		if err != nil {
 			log.Error("Fail to find the next hop for response:", msg)
@@ -202,7 +203,6 @@ func (p *Proxy) getNextReponseHop(msg *Message) (host string, port int, transpor
 		port = viaParam.GetPort()
 		err = nil
 	}
-	msg.PopVia()
 	return
 }
 

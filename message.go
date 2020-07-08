@@ -87,12 +87,12 @@ func parseRequestLine(line string) (*RequestLine, error) {
 
 func parseStatusLine(line string) (*StatusLine, error) {
 	fields := strings.Fields(line)
-	if len(fields) == 3 {
+	if len( fields ) >= 3 {
 		statusCode, err := strconv.Atoi(fields[1])
 		if err != nil {
 			return nil, err
 		}
-		return &StatusLine{version: fields[0], statusCode: statusCode, reason: fields[2]}, nil
+		return &StatusLine{version: fields[0], statusCode: statusCode, reason: strings.Join( fields[2:], " ") }, nil
 	} else {
 		return nil, errors.New("Not a valid sip response")
 	}
@@ -362,7 +362,7 @@ func (m *Message) encodeFirstLine(writer io.Writer) (int, error) {
 	if m.request != nil {
 		return fmt.Fprintf(writer, "%s %s %s\r\n", m.request.method, m.request.uri, m.request.version)
 	} else if m.response != nil {
-		return fmt.Fprintf(writer, "%s %s %s\r\n", m.response.version, m.response.statusCode, m.response.reason)
+		return fmt.Fprintf(writer, "%s %d %s\r\n", m.response.version, m.response.statusCode, m.response.reason)
 	}
 	return 0, nil
 }
