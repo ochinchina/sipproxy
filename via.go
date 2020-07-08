@@ -194,11 +194,12 @@ func parseViaParam(viaParam string) (*ViaParam, error) {
 		if i != 0 {
 			pos := strings.IndexByte(param, '=')
 			if pos == -1 {
-				return nil, errors.New("Malformatted via params")
+				via.Params = append(via.Params, KeyValue{Key: param, Value: ""})
+			} else {
+				name := param[0:pos]
+				value := param[pos+1:]
+				via.Params = append(via.Params, KeyValue{Key: name, Value: value})
 			}
-			name := param[0:pos]
-			value := param[pos+1:]
-			via.Params = append(via.Params, KeyValue{Key: name, Value: value})
 		}
 	}
 	return via, nil

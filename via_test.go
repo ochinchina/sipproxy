@@ -27,6 +27,13 @@ func TestParseVia(t *testing.T) {
 
 }
 
+func TestParseVia2(t *testing.T) {
+	via, err := ParseVia("SIP/2.0/UDP 10.68.103.193:5060;branch=z9hG4bK-343437-6119ae735a31a77df85d22346c030fa7;rport")
+	if err != nil {
+		t.Fail()
+	}
+	fmt.Println(via)
+}
 func TestCreateViaParam(t *testing.T) {
 	viaParam := CreateViaParam("UDP", "client.biloxi.example.com", 0)
 	branch, _ := CreateBranch()

@@ -87,12 +87,12 @@ func parseRequestLine(line string) (*RequestLine, error) {
 
 func parseStatusLine(line string) (*StatusLine, error) {
 	fields := strings.Fields(line)
-	if len( fields ) >= 3 {
+	if len(fields) >= 3 {
 		statusCode, err := strconv.Atoi(fields[1])
 		if err != nil {
 			return nil, err
 		}
-		return &StatusLine{version: fields[0], statusCode: statusCode, reason: strings.Join( fields[2:], " ") }, nil
+		return &StatusLine{version: fields[0], statusCode: statusCode, reason: strings.Join(fields[2:], " ")}, nil
 	} else {
 		return nil, errors.New("Not a valid sip response")
 	}
@@ -299,7 +299,7 @@ func (m *Message) GetVia() (*Via, error) {
 		return v, nil
 
 	}
-	return nil, errors.New("The haeder value type is not string or Via")
+	return nil, errors.New("The header value type is not string or Via")
 }
 
 // remove first via
