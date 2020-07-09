@@ -26,6 +26,7 @@ type Header struct {
 	name  string
 	value interface{}
 }
+
 type Message struct {
 	request  *RequestLine
 	response *StatusLine
@@ -33,6 +34,48 @@ type Message struct {
 	body     []byte
 }
 
+type compactHeaderNames struct {
+	compactHeaders map[string]string
+}
+
+func NewCompactHeaderNames() *compactHeaderNames {
+	return &compactHeaderNames{compactHeaders: make(map[string]string)}
+}
+
+func (ch *compactHeaderNames) AddCompact(name, compactName string) {
+	name = strings.ToLower(name)
+	compactName = strings.ToLower(compactName)
+	ch.compactHeaders[name] = compactName
+	ch.compactHeaders[compactName] = name
+}
+
+func (ch *compactHeaderNames) GetCompact(name string) (string, bool) {
+	name = strings.ToLower(name)
+	v, ok := ch.compactHeaders[name]
+	return v, ok
+
+}
+
+var compactHdrNames *compactHeaderNames = nil
+
+func init() {
+	compactHdrNames = NewCompactHeaderNames()
+	compactHdrNames.AddCompact("Accept-Contact", "a")
+	compactHdrNames.AddCompact("Referred-By", "b")
+	compactHdrNames.AddCompact("Content-Type", "c")
+	compactHdrNames.AddCompact("Content-Encoding", "e")
+	compactHdrNames.AddCompact("From", "f")
+	compactHdrNames.AddCompact("Call-ID", "i")
+	compactHdrNames.AddCompact("Supported", "k")
+	compactHdrNames.AddCompact("Content-Length", "l")
+	compactHdrNames.AddCompact("Contact", "m")
+	compactHdrNames.AddCompact("Event", "o")
+	compactHdrNames.AddCompact("Refer-To", "r")
+	compactHdrNames.AddCompact("Subject", "s")
+	compactHdrNames.AddCompact("To", "t")
+	compactHdrNames.AddCompact("Allow-Events", "u")
+	compactHdrNames.AddCompact("Via", "v")
+}
 func NewMessage() *Message {
 	return &Message{headers: make([]*Header, 0),
 		body: make([]byte, 0)}
@@ -155,9 +198,18 @@ func (m *Message) AddHeader(name string, value string) {
 	m.headers = append(m.headers, &Header{name: name, value: value})
 }
 
+func (m *Message) isSameHeader(name_1, name_2 string) bool {
+	if strings.EqualFold(name_1, name_2) {
+		return true
+	}
+	compact, ok := compactHdrNames.GetCompact(name_2)
+	return ok && strings.EqualFold(name_1, compact)
+
+}
+
 func (m *Message) GetHeader(name string) (*Header, error) {
 	for _, header := range m.headers {
-		if header.name == name {
+		if m.isSameHeader( header.name, name ) {
 			return header, nil
 		}
 	}
@@ -166,7 +218,7 @@ func (m *Message) GetHeader(name string) (*Header, error) {
 
 func (m *Message) findHeaderPos(name string) (int, error) {
 	for index, header := range m.headers {
-		if header.name == name {
+		if m.isSameHeader( header.name, name ) {
 			return index, nil
 		}
 	}
@@ -199,7 +251,7 @@ func (m *Message) GetHeaderInt(name string) (int, error) {
 // return the value of the header
 func (m *Message) RemoveHeader(name string) (interface{}, error) {
 	for index, header := range m.headers {
-		if header.name == name {
+		if m.isSameHeader( header.name, name ) {
 			m.headers = append(m.headers[0:index], m.headers[index+1:]...)
 			return header.value, nil
 		}
@@ -263,7 +315,7 @@ func (m *Message) PopRoute() error {
 
 func (m *Message) findViaInsertPos() int {
 	for index, header := range m.headers {
-		if header.name == "v" || header.name == "Via" {
+		if m.isSameHeader( header.name, "Via" ) {
 			return index
 		}
 	}

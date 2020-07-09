@@ -23,7 +23,7 @@ type ProxyConfig struct {
 		TCPPort  int      `yaml:"tcp-port,omitempty"`
 		Backends []string `yaml:",omitempty"`
 		Dests    []string `yaml:",omitempty"`
-		defRoute bool     `yaml:",omitempty"`
+		defRoute bool     `yaml:"def-route,omitempty"`
 	}
 	Route []struct {
 		Dests    []string

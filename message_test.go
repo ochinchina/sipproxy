@@ -76,5 +76,17 @@ Content-Length: 0
 		t.Fail()
 	}
 
+	h1, err := msg.GetHeader( "v" )
+	if err != nil {
+		t.Fail()
+	}
+
+	h2, err := msg.GetHeader( "via" )
+	if err != nil {
+		t.Fail()
+	}
+	if h1 != h2 {
+		t.Fail()
+	}
 	fmt.Println(msg)
 }
