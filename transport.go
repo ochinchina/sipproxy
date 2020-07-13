@@ -28,6 +28,7 @@ type ServerTransport interface {
 type UDPServerTransport struct {
 	addr       string
 	port       int
+	selfLearnRoute *SelfLearnRoute
 	msgHandler MessageHandler
 }
 
@@ -107,10 +108,10 @@ func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int
 	return nil, fmt.Errorf("not support %s", protocol)
 }
 
-func NewUDPServerTransport(addr string, port int) *UDPServerTransport {
+func NewUDPServerTransport(addr string, port int, selfLearnRoute *SelfLearnRoute ) *UDPServerTransport {
 
 	log.WithFields(log.Fields{"addr": addr, "port": port}).Info("Create new UDP server transport")
-	return &UDPServerTransport{addr: addr, port: port, msgHandler: nil}
+	return &UDPServerTransport{addr: addr, port: port, msgHandler: nil, selfLearnRoute: selfLearnRoute}
 }
 
 func (u *UDPServerTransport) Send(host string, port int, message *Message) error {
@@ -157,12 +158,18 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 	return nil
 }
 
-func (u *UDPServerTransport) parseMessage(addr string, port int, buf []byte) (*Message, error) {
+// parse message
+func (u *UDPServerTransport) parseMessage(peerAddr string, peerPort int, buf []byte) (*Message, error) {
 	msg, err := ParseMessage(buf)
 	if err != nil {
 		log.Error("Fail to parse sip message ", string(buf))
 		return nil, errors.New("Fail to parse sip message")
 	}
+	msg.ReceivedFrom = u
+	u.selfLearnRoute.AddRoute( peerAddr, u )
+	msg.ForEachViaParam( func( viaParam *ViaParam ) {
+		u.selfLearnRoute.AddRoute( viaParam.Host,  u ) 
+	})
 	// set the received parameters
 	if msg.IsRequest() {
 		via, err := msg.GetVia()
@@ -175,14 +182,31 @@ func (u *UDPServerTransport) parseMessage(addr string, port int, buf []byte) (*M
 			log.Error("Fail to find via-param in Via header")
 			return nil, err
 		}
-		viaParam.SetReceived(addr)
+		viaParam.SetReceived(peerAddr)
 		if viaParam.HasParam("rport") {
-			viaParam.SetParam("rport", fmt.Sprintf("%d", port))
+			viaParam.SetParam("rport", fmt.Sprintf("%d", peerPort))
+		}
+	}
+
+	// The proxy will inspect the URI in the topmost Route header
+        // field value.  If it indicates this proxy, the proxy removes it
+        // from the Route header field (this route node has been
+        // reached).
+	route, err := msg.GetRoute()
+	if err == nil {
+		routeParam, err := route.GetRouteParam( 0 )
+		if err == nil {
+			sipUri, err := routeParam.GetAddress().GetAddress().GetSIPURI()
+			if err == nil && sipUri.Host == u.addr && sipUri.GetPort() == u.port {
+				log.WithFields( log.Fields{ "route-param": routeParam } ).Info( "remove top route item because the top item is my address" )
+				msg.PopRoute()
+			}
 		}
 	}
 	return msg, nil
 
 }
+
 func (u *UDPServerTransport) processMessage(msgChannel chan *Message) {
 
 	for {

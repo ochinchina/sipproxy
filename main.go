@@ -115,14 +115,16 @@ func startProxies(c *cli.Context) error {
 }
 
 func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *PreConfigHostResolver) error {
-	proxy := NewProxy(config.Name, preConfigRoute, resolver)
+	selfLearnRoute := NewSelfLearnRoute()
+	proxy := NewProxy(config.Name, preConfigRoute, resolver, selfLearnRoute )
 	for _, listen := range config.Listens {
 		item, err := NewProxyItem(listen.Address,
 			listen.UDPPort,
 			listen.TCPPort,
 			listen.Backends,
 			listen.Dests,
-			listen.defRoute)
+			listen.defRoute,
+			selfLearnRoute )
 		if err != nil {
 			log.Error("Fail to start proxy with error:", err)
 			return err

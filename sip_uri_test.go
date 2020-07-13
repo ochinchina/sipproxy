@@ -10,6 +10,9 @@ func TestSIPURIParse(t *testing.T) {
 	if err != nil {
 		t.Fail()
 	}
+	if sipUri.Host != "atlanta.com" || sipUri.GetPort() != 5060 {
+		t.Fail()
+	}
 	if v, err := sipUri.GetParameter("ttl"); err != nil && v != "15" {
 		t.Fail()
 	}

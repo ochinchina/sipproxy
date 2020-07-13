@@ -90,3 +90,61 @@ Content-Length: 0
 	}
 	fmt.Println(msg)
 }
+
+func TestSubscribeResponse( t *testing.T ) {
+	s := `SIP/2.0 200 OK
+CSeq: 2 SUBSCRIBE
+Expires: 28
+P-Charging-Vector: icid-value=sgc3.daatf005.sip.t-mobile.com-1485-460188-67377;term-ioi=e-ioi3
+Via: SIP/2.0/UDP 10.68.103.193:5060;branch=z9hG4bK-383232-4ad1d19b0d288e2f7d340d9d845b7d3e;rport=16149;received=10.244.0.235^M
+From: <sip:557399123456@10.68.103.193:5060>;tag=LRF_f3c4238f
+To: <sip:557399123456@msg.pc.t-mobile.com>;tag=86b323bb
+Call-ID: 3f375853bd0c3f138f8a18a2f26aae72@0.0.0.0
+Content-Length: 0
+
+`
+
+	msg, err := ParseMessage([]byte(s))
+        if err != nil {
+                t.Fail()
+        }
+
+	fmt.Println( msg )
+}
+
+func TestNotifyRequstParse( t *testing.T ) {
+	s := `NOTIFY sip:557399123456@10.68.103.193:5060 SIP/2.0
+Route: <sip:ecf01.sip.t-mobile.com;lr;transport=udp>
+Max-Forwards: 70
+Allow: INVITE,BYE,CANCEL,ACK,SUBSCRIBE,NOTIFY,PUBLISH,MESSAGE,REFER,REGISTER,UPDATE
+Call-ID: 4d5439bc97463287a2ea8b9968962c75@0.0.0.0
+Contact: <sip:mavodi-0-1b2-26-1-ffffffff-@10.166.226.86:5060>
+Event: dialog;call-id="MXJytcizoWFR5yuIQ15O_Q..@2607:fb90:8330:361a:0:f:cdeb:6701~ccso(0-419-3632-1)";to-tag=mavodi-0-1a3-e30-1-2000000-89e0c9-35-1e36-_00E081E57238-7627-7f259700-1e0a-588a52dc-132a9
+Subscription-State: active;expires=86400
+Content-Type: application/dialog-info+xml
+P-Charging-Vector: icid-value=0.434.38-1485460191.420;orig-ioi=e-ioi3
+Via: SIP/2.0/UDP 10.68.103.193:5060;branch=z9hG4bK-343639-4ab643fb4417a1fd5a1d459a5df76b76;received=10.68.101.167
+From: <sip:557399123456@msg.pc.t-mobile.com>;tag=621f840b
+To: <sip:557399123456@ecf01.sip.t-mobile.com:5060>;tag=LRF_623f6d01
+CSeq: 3 NOTIFY
+Content-Length: 4
+
+test`
+
+	msg, err := ParseMessage([]byte(s))
+	if err != nil {
+                t.Fail()
+        }
+	fmt.Println( msg )
+	requestURI, err := msg.GetRequestURI()
+	if err != nil {
+		t.Fail()
+	}
+	sipURI, err := requestURI.GetSIPURI()
+	if err != nil {
+		t.Fail()
+	}
+	if sipURI.Host != "10.68.103.193" || sipURI.GetPort() != 5060 {
+		t.Fail()
+	}
+}

@@ -106,6 +106,11 @@ func (vp *ViaParam) GetPort() int {
 	return 5060
 }
 
+// GetSentBy Get the sent-by in "Host:Port" format
+func (vp *ViaParam) GetSentBy() string {
+	return fmt.Sprintf( "%s:%d", vp.Host, vp.GetPort() )
+}
+
 func (vp *ViaParam) GetReceived() (string, error) {
 	return vp.GetParam("received")
 }

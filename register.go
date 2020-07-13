@@ -19,7 +19,9 @@ func NewRegister(transport ClientTransport,
 }
 
 func (r *Register) Start() {
-	message := NewRequest("REGISTER", "sip:"+r.registerServer, "2.0")
-	buf := bytes.NewBuffer(make([]byte, 0))
-	message.Write(buf)
+	message, err := NewRequest("REGISTER", "sip:"+r.registerServer, "2.0")
+	if err == nil {
+		buf := bytes.NewBuffer(make([]byte, 0))
+		message.Write(buf)
+	}
 }

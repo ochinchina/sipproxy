@@ -18,14 +18,19 @@ type Proxy struct {
 	resolver       *PreConfigHostResolver
 	items          []*ProxyItem
 	clientTransMgr *ClientTransportMgr
+	selfLearnRoute *SelfLearnRoute
 }
 
-func NewProxy(name string, preConfigRoute *PreConfigRoute, resolver *PreConfigHostResolver) *Proxy {
+func NewProxy(name string, 
+		preConfigRoute *PreConfigRoute, 
+		resolver *PreConfigHostResolver,
+		selfLearnRoute *SelfLearnRoute ) *Proxy {
 	return &Proxy{name: name,
 		preConfigRoute: preConfigRoute,
 		resolver:       resolver,
 		items:          make([]*ProxyItem, 0),
-		clientTransMgr: NewClientTransportMgr()}
+		clientTransMgr: NewClientTransportMgr(),
+		selfLearnRoute: selfLearnRoute}
 }
 
 func (p *Proxy) AddItem(item *ProxyItem) {
@@ -50,18 +55,17 @@ func (p *Proxy) startItem(item *ProxyItem) error {
 }
 
 func (p *Proxy) isMyMessage(msg *Message) bool {
-	to, err := msg.GetTo()
+	requestURI, err := msg.GetRequestURI()
 	if err != nil {
-		log.Error("Fail to find the header To im message:", msg)
+		log.Error("Fail to find the requestURI in message:", msg)
 		return false
 	}
-
-	userHost, err := to.GetUserHost()
+	sipUri, err := requestURI.GetSIPURI()
 	if err == nil {
-		return p.name == userHost
+		return sipUri.Host == msg.ReceivedFrom.GetAddress() && sipUri.GetPort() == msg.ReceivedFrom.GetPort()
 	}
-	absoluteURI, err := to.GetAbsoluteURI()
-	return err == nil && p.name == absoluteURI
+	absoluteURI, err := requestURI.GetAbsoluteURI()
+	return err == nil && p.name == absoluteURI.String()
 
 }
 
@@ -74,6 +78,11 @@ func (p *Proxy) handleMessage(msg *Message, from *ProxyItem) {
 		} else {
 			host, port, transport, err := p.getNextRequestHop(msg)
 			log.Info("Not my request, get next hop, host=", host, ",port=", port, ",transport=", transport)
+			serverTrans, ok := p.selfLearnRoute.GetRoute( host )
+			if ok {
+				p.addVia( msg, serverTrans )
+				p.addRecordRoute( msg, serverTrans )
+			}
 			if err != nil {
 				log.Error("Fail to find the next hop for request:", msg)
 			} else {
@@ -85,12 +94,37 @@ func (p *Proxy) handleMessage(msg *Message, from *ProxyItem) {
 		msg.PopVia()
 		host, port, transport, err := p.getNextReponseHop(msg)
 		if err != nil {
-			log.Error("Fail to find the next hop for response:", msg)
+			log.WithFields(log.Fields{"message": msg }).Error("Fail to find the next hop for response")
 		} else {
-			log.WithFields(log.Fields{"host": host, "port": port, "transport": transport}).Info("Send response")
+			log.Info("Send response")
 			p.sendMessage(host, port, transport, msg)
 		}
 	}
+}
+
+func (p *Proxy) addVia(msg *Message, transport ServerTransport ) {
+	viaParam := CreateViaParam( transport.GetProtocol(), transport.GetAddress(), transport.GetPort() )
+	branch, err := CreateBranch()
+	if err != nil {
+		log.Error("Fail to create branch parameter")
+		return
+	}
+	viaParam.SetBranch(branch)
+	via := NewVia()
+	via.AddViaParam(viaParam)
+	msg.AddVia(via)
+}
+
+func (p *Proxy) addRecordRoute(msg *Message, transport ServerTransport) {
+	addr := NewAddrSpec()
+	addr.sipURI = &SIPURI{Scheme: "sip", Host: transport.GetAddress(), port: transport.GetPort()}
+	addr.sipURI.AddParameter("lr", "")
+	nameAddr := &NameAddr{DisplayName: "", Addr: addr}
+	recRoute := NewRecRoute(nameAddr)
+	recordRoute := NewRecordRoute()
+	recordRoute.AddRecRoute(recRoute)
+	msg.AddRecordRoute(recordRoute)
+
 }
 
 func (p *Proxy) sendToBackend(msg *Message) {
@@ -99,26 +133,9 @@ func (p *Proxy) sendToBackend(msg *Message) {
 		log.Error("Fail to find the backend for my message\n", msg)
 	} else {
 		transport := backendItem.transports[0]
-		viaParam := CreateViaParam(transport.GetProtocol(), transport.GetAddress(), transport.GetPort())
-		branch, err := CreateBranch()
-		if err != nil {
-			log.Error("Fail to create branch parameter")
-			return
-		}
-		viaParam.SetBranch(branch)
-		via := NewVia()
-		via.AddViaParam(viaParam)
-		msg.AddVia(via)
-
-		addr := NewAddrSpec()
-		addr.sipURI = &SIPURI{Scheme: "sip", Host: transport.GetAddress(), port: transport.GetPort()}
-		addr.sipURI.AddParameter( "lr", "")
-		nameAddr := &NameAddr{DisplayName: "", Addr: addr}
-		recRoute := NewRecRoute(nameAddr)
-		recordRoute := NewRecordRoute()
-		recordRoute.AddRecRoute(recRoute)
-		msg.AddRecordRoute(recordRoute)
-		err = backendItem.backend.Send(msg)
+		p.addVia(msg, transport )
+		p.addRecordRoute(msg, transport)
+		err := backendItem.backend.Send(msg)
 		if err != nil {
 			log.WithFields(log.Fields{"error": err}).Error("Fail to send message to backend")
 		}
@@ -218,9 +235,10 @@ func (p *Proxy) sendMessage(host string, port int, transport string, msg *Messag
 	}
 	t, err := p.findClientTransport(ip, port, transport)
 	if err == nil {
+		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg }).Info("Suceed to send" )
 		t.Send(msg)
 	} else {
-		log.Error("Fail to find the transport by ", transport)
+		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg }).Error("Fail to find the transport by ", transport)
 	}
 }
 
@@ -230,12 +248,13 @@ func NewProxyItem(address string,
 	tcpPort int,
 	backends []string,
 	dests []string,
-	defRoute bool) (*ProxyItem, error) {
+	defRoute bool,
+	selfLearnRoute *SelfLearnRoute) (*ProxyItem, error) {
 	transports := make([]ServerTransport, 0)
 	if udpPort > 0 {
-		transports = append(transports, NewUDPServerTransport(address, udpPort))
+		transports = append(transports, NewUDPServerTransport(address, udpPort, selfLearnRoute))
 	}
-	backend, err := CreateBackend( fmt.Sprintf( "%s:%d", address, 0 ), backends)
+	backend, err := CreateBackend(fmt.Sprintf("%s:%d", address, 0), backends)
 	if err != nil {
 		return nil, err
 	}

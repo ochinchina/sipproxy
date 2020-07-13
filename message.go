@@ -8,11 +8,13 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	log "github.com/sirupsen/logrus"
 )
 
 type RequestLine struct {
 	method  string
-	uri     string
+	// request-uri and addr-spec have same syntax
+	requestURI *AddrSpec
 	version string
 }
 
@@ -32,6 +34,7 @@ type Message struct {
 	response *StatusLine
 	headers  []*Header
 	body     []byte
+	ReceivedFrom ServerTransport
 }
 
 type compactHeaderNames struct {
@@ -57,7 +60,7 @@ func (ch *compactHeaderNames) GetCompact(name string) (string, bool) {
 }
 
 var compactHdrNames *compactHeaderNames = nil
-
+var finalResponseStatusCodes  map[int]bool = map[int]bool{ 2:true, 3: true, 4: true, 5: true, 6: true }
 func init() {
 	compactHdrNames = NewCompactHeaderNames()
 	compactHdrNames.AddCompact("Accept-Contact", "a")
@@ -77,22 +80,31 @@ func init() {
 	compactHdrNames.AddCompact("Via", "v")
 }
 func NewMessage() *Message {
-	return &Message{headers: make([]*Header, 0),
-		body: make([]byte, 0)}
+	return &Message{request: nil,
+			response: nil,
+			headers: make([]*Header, 0),
+			body: make([]byte, 0),
+			ReceivedFrom: nil }
 }
 
-func NewRequest(method string, uri string, version string) *Message {
-	return &Message{request: &RequestLine{method: method, uri: uri, version: version},
+func NewRequest(method string, uri string, version string) (*Message, error ) {
+	requestURI, err := ParseAddrSpec( uri )
+	if err != nil {
+		return nil, err
+	}
+	return &Message{request: &RequestLine{method: method, requestURI: requestURI, version: version},
 		response: nil,
 		headers:  make([]*Header, 0),
-		body:     make([]byte, 0)}
+		body:     make([]byte, 0),
+		ReceivedFrom: nil }, nil
 }
 
 func NewResponseOf(request *Message, statusCode int, reason string) *Message {
 	return &Message{request: nil,
 		response: &StatusLine{version: request.request.version, statusCode: statusCode, reason: reason},
 		headers:  make([]*Header, 0),
-		body:     make([]byte, 0)}
+		body:     make([]byte, 0),
+		ReceivedFrom: nil }
 }
 
 func readLine(reader *bufio.Reader) ([]byte, error) {
@@ -122,7 +134,11 @@ func isRequestLine(line string) bool {
 func parseRequestLine(line string) (*RequestLine, error) {
 	fields := strings.Fields(line)
 	if len(fields) == 3 {
-		return &RequestLine{method: fields[0], uri: fields[1], version: fields[2]}, nil
+		requestURI, err := ParseAddrSpec( fields[1] )
+		if err != nil {
+			return nil, err
+		}
+		return &RequestLine{method: fields[0], requestURI: requestURI, version: fields[2]}, nil
 	} else {
 		return nil, errors.New("Not a valid sip request")
 	}
@@ -165,6 +181,7 @@ func ParseMessage(b []byte) (*Message, error) {
 			} else {
 				response, err := parseStatusLine(line)
 				if err != nil {
+					log.WithFields( log.Fields{ "error": err } ).Error( "Fail to parse status line:", line )
 					return nil, err
 				}
 				msg.response = response
@@ -354,7 +371,28 @@ func (m *Message) GetVia() (*Via, error) {
 	return nil, errors.New("The header value type is not string or Via")
 }
 
-// remove first via
+func (m *Message)GetCSeq()( *CSeq, error ) {
+	header, err := m.GetHeader("CSeq")
+        if err != nil {
+                return nil, err
+        }
+
+        if v, ok := header.value.(*CSeq); ok {
+                return v, nil
+        }
+        if s, ok := header.value.(string); ok {
+                v, err := ParseCSeq(s)
+                if err != nil {
+                        return nil, err
+                }
+                header.value = v
+                return v, nil
+
+        }
+        return nil, errors.New("The header value type is not string or CSeq")
+}
+
+// PopVia remove first via
 func (m *Message) PopVia() error {
 	via, err := m.GetVia()
 	if err != nil {
@@ -367,6 +405,38 @@ func (m *Message) PopVia() error {
 		_, err := m.RemoveHeader("Via")
 		return err
 	}
+}
+
+func (m *Message) ForEachVia( viaProcessor func( *Via ) ) {
+	for _, header := range m.headers {
+                if ! m.isSameHeader( header.name, "Via" ) {
+                        continue
+                }
+		if v, ok := header.value.(*Via); ok {
+               		viaProcessor( v ) 
+        	}
+        	if s, ok := header.value.(string); ok {
+                	v, err := ParseVia(s)
+                	if err != nil {
+                       		continue
+                	}
+                	header.value = v
+			viaProcessor( v )
+        	}
+        }
+
+}
+
+func (m *Message) ForEachViaParam( handler func( *ViaParam ) ) {
+	m.ForEachVia( func( via *Via ) {
+		n := via.Size()
+		for i := 0; i < n; i++ {
+			param, err := via.GetParam( i )
+			if err == nil {
+				handler( param )
+			}
+		}
+	})
 }
 
 func (m *Message) findRecordRoutePos() int {
@@ -412,7 +482,7 @@ func (m *Message) Write(writer io.Writer) (int, error) {
 
 func (m *Message) encodeFirstLine(writer io.Writer) (int, error) {
 	if m.request != nil {
-		return fmt.Fprintf(writer, "%s %s %s\r\n", m.request.method, m.request.uri, m.request.version)
+		return fmt.Fprintf(writer, "%s %v %s\r\n", m.request.method, m.request.requestURI, m.request.version)
 	} else if m.response != nil {
 		return fmt.Fprintf(writer, "%s %d %s\r\n", m.response.version, m.response.statusCode, m.response.reason)
 	}
@@ -445,6 +515,24 @@ func (m *Message) IsRequest() bool {
 	return m.request != nil
 }
 
-func (m *Message) isResponse() bool {
+
+func (m *Message) GetRequestURI() ( *AddrSpec, error ) {
+	if m.request == nil {
+		return nil, errors.New( "Not a request" )
+	}
+	return m.request.requestURI, nil
+}
+
+func (m *Message) IsResponse() bool {
 	return m.response != nil
+}
+//
+// All 2xx, 3xx, 4xx, 5xx and 6xx responses are final.
+func (m *Message) IsFinalResponse() bool {
+	if m.response == nil  {
+		return false
+	}
+
+	value, ok := finalResponseStatusCodes[ m.response.statusCode ]
+	return ok && value
 }
