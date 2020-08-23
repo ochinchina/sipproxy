@@ -6,12 +6,14 @@ proxies:
   - address: 127.0.0.1
     udp-port: 7890
     tcp-port: 7891
+    no-received: true
     backends:
     - udp://127.0.0.1:7990
     - udp://127.0.0.1:7991
   - address: 127.0.0.1
     udp-port: 7892
     tcp-port: 7893
+    no-received: false
     dests:
     - test.com
     - example.com

@@ -26,10 +26,11 @@ type ServerTransport interface {
 }
 
 type UDPServerTransport struct {
-	addr       string
-	port       int
-	selfLearnRoute *SelfLearnRoute
-	msgHandler MessageHandler
+	addr            string
+	port            int
+	receivedSupport bool
+	selfLearnRoute  *SelfLearnRoute
+	msgHandler      MessageHandler
 }
 
 type ClientTransport interface {
@@ -38,7 +39,7 @@ type ClientTransport interface {
 
 type UDPClientTransport struct {
 	conn       *net.UDPConn
-	remoteAddr  *net.UDPAddr
+	remoteAddr *net.UDPAddr
 	msgChannel chan *Message
 }
 
@@ -48,7 +49,7 @@ func NewUDPClientTransport(host string, port int) (*UDPClientTransport, error) {
 		log.WithFields(log.Fields{"host": host, "port": port, "error": err}).Error("Fail to resolve udp host address")
 		return nil, err
 	}
-        laddr, _:= net.ResolveUDPAddr("udp", ":0" )
+	laddr, _ := net.ResolveUDPAddr("udp", ":0")
 	conn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
 		log.WithFields(log.Fields{"host": host, "port": port, "error": err}).Error("Fail to dial UDP")
@@ -68,11 +69,11 @@ func (u *UDPClientTransport) takeAndSendMessage() {
 	for {
 		select {
 		case msg := <-u.msgChannel:
-			buf := bytes.NewBuffer( make([]byte, 0 ) )
-			msg.Write( buf )
-			n, err := u.conn.WriteToUDP( buf.Bytes(), u.remoteAddr )
+			buf := bytes.NewBuffer(make([]byte, 0))
+			msg.Write(buf)
+			n, err := u.conn.WriteToUDP(buf.Bytes(), u.remoteAddr)
 			if err == nil {
-				log.WithFields( log.Fields{ "length": n, "address": u.remoteAddr }).Info( "Succeed to send message" )
+				log.WithFields(log.Fields{"length": n, "address": u.remoteAddr}).Info("Succeed to send message")
 			} else {
 				log.WithFields(log.Fields{"error": err}).Error("Fail to send message")
 			}
@@ -108,10 +109,14 @@ func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int
 	return nil, fmt.Errorf("not support %s", protocol)
 }
 
-func NewUDPServerTransport(addr string, port int, selfLearnRoute *SelfLearnRoute ) *UDPServerTransport {
+func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) *UDPServerTransport {
 
 	log.WithFields(log.Fields{"addr": addr, "port": port}).Info("Create new UDP server transport")
-	return &UDPServerTransport{addr: addr, port: port, msgHandler: nil, selfLearnRoute: selfLearnRoute}
+	return &UDPServerTransport{addr: addr,
+		port:            port,
+		receivedSupport: receivedSupport,
+		msgHandler:      nil,
+		selfLearnRoute:  selfLearnRoute}
 }
 
 func (u *UDPServerTransport) Send(host string, port int, message *Message) error {
@@ -138,7 +143,7 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 		for {
 			log.Info("try to read a packet")
 			n, peerAddr, err := conn.ReadFromUDP(buf)
-			log.WithFields( log.Fields{"length": n}).Info("read a packet with length")
+			log.WithFields(log.Fields{"length": n}).Info("read a packet with length")
 			if err != nil {
 				log.WithFields(log.Fields{"addr": u.addr, "port": u.port, "error": err}).Error("Fail to read data")
 				break
@@ -146,7 +151,7 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 			address := peerAddr.IP.String()
 			port := peerAddr.Port
 			log.WithFields(log.Fields{"length": n, "address": address, "port": port}).Info("a UDP packet is received")
-                        b := buf[0:n]
+			b := buf[0:n]
 			msg, err := u.parseMessage(address, port, b)
 			if err != nil {
 				log.Error("Fail to parse sip message:\n", string(b))
@@ -166,12 +171,12 @@ func (u *UDPServerTransport) parseMessage(peerAddr string, peerPort int, buf []b
 		return nil, errors.New("Fail to parse sip message")
 	}
 	msg.ReceivedFrom = u
-	u.selfLearnRoute.AddRoute( peerAddr, u )
-	msg.ForEachViaParam( func( viaParam *ViaParam ) {
-		u.selfLearnRoute.AddRoute( viaParam.Host,  u ) 
+	u.selfLearnRoute.AddRoute(peerAddr, u)
+	msg.ForEachViaParam(func(viaParam *ViaParam) {
+		u.selfLearnRoute.AddRoute(viaParam.Host, u)
 	})
 	// set the received parameters
-	if msg.IsRequest() {
+	if msg.IsRequest() && u.receivedSupport {
 		via, err := msg.GetVia()
 		if err != nil {
 			log.Error("Fail to find Via header in request")
@@ -189,16 +194,16 @@ func (u *UDPServerTransport) parseMessage(peerAddr string, peerPort int, buf []b
 	}
 
 	// The proxy will inspect the URI in the topmost Route header
-        // field value.  If it indicates this proxy, the proxy removes it
-        // from the Route header field (this route node has been
-        // reached).
+	// field value.  If it indicates this proxy, the proxy removes it
+	// from the Route header field (this route node has been
+	// reached).
 	route, err := msg.GetRoute()
 	if err == nil {
-		routeParam, err := route.GetRouteParam( 0 )
+		routeParam, err := route.GetRouteParam(0)
 		if err == nil {
 			sipUri, err := routeParam.GetAddress().GetAddress().GetSIPURI()
 			if err == nil && sipUri.Host == u.addr && sipUri.GetPort() == u.port {
-				log.WithFields( log.Fields{ "route-param": routeParam } ).Info( "remove top route item because the top item is my address" )
+				log.WithFields(log.Fields{"route-param": routeParam}).Info("remove top route item because the top item is my address")
 				msg.PopRoute()
 			}
 		}

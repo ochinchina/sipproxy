@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -18,12 +19,13 @@ type HostIp struct {
 type ProxyConfig struct {
 	Name    string
 	Listens []struct {
-		Address  string
-		UDPPort  int      `yaml:"udp-port,omitempty"`
-		TCPPort  int      `yaml:"tcp-port,omitempty"`
-		Backends []string `yaml:",omitempty"`
-		Dests    []string `yaml:",omitempty"`
-		defRoute bool     `yaml:"def-route,omitempty"`
+		Address         string
+		UDPPort         int      `yaml:"udp-port,omitempty"`
+		TCPPort         int      `yaml:"tcp-port,omitempty"`
+		Backends        []string `yaml:",omitempty"`
+		Dests           []string `yaml:",omitempty"`
+		NoReceived bool `yaml:"no-received,omitempty"`
+		defRoute        bool     `yaml:"def-route,omitempty"`
 	}
 	Route []struct {
 		Dests    []string
@@ -85,6 +87,7 @@ func loadConfig(fileName string) (*ProxiesConfigure, error) {
 	}
 
 	b, err := yaml.Marshal(r)
+	fmt.Println( r )
 	log.Debug("Success load configuration file:\n", string(b))
 	return r, nil
 
@@ -116,7 +119,7 @@ func startProxies(c *cli.Context) error {
 
 func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *PreConfigHostResolver) error {
 	selfLearnRoute := NewSelfLearnRoute()
-	proxy := NewProxy(config.Name, preConfigRoute, resolver, selfLearnRoute )
+	proxy := NewProxy(config.Name, preConfigRoute, resolver, selfLearnRoute)
 	for _, listen := range config.Listens {
 		item, err := NewProxyItem(listen.Address,
 			listen.UDPPort,
@@ -124,7 +127,8 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 			listen.Backends,
 			listen.Dests,
 			listen.defRoute,
-			selfLearnRoute )
+			!listen.NoReceived,
+			selfLearnRoute)
 		if err != nil {
 			log.Error("Fail to start proxy with error:", err)
 			return err

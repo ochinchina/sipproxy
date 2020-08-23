@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	log "github.com/sirupsen/logrus"
+	"strings"
 )
 
 type ProxyItem struct {
@@ -13,7 +14,7 @@ type ProxyItem struct {
 }
 
 type Proxy struct {
-	name           string
+	names          []string
 	preConfigRoute *PreConfigRoute
 	resolver       *PreConfigHostResolver
 	items          []*ProxyItem
@@ -21,11 +22,11 @@ type Proxy struct {
 	selfLearnRoute *SelfLearnRoute
 }
 
-func NewProxy(name string, 
-		preConfigRoute *PreConfigRoute, 
-		resolver *PreConfigHostResolver,
-		selfLearnRoute *SelfLearnRoute ) *Proxy {
-	return &Proxy{name: name,
+func NewProxy(name string,
+	preConfigRoute *PreConfigRoute,
+	resolver *PreConfigHostResolver,
+	selfLearnRoute *SelfLearnRoute) *Proxy {
+	return &Proxy{names: strings.Split(name, ","),
 		preConfigRoute: preConfigRoute,
 		resolver:       resolver,
 		items:          make([]*ProxyItem, 0),
@@ -60,12 +61,34 @@ func (p *Proxy) isMyMessage(msg *Message) bool {
 		log.Error("Fail to find the requestURI in message:", msg)
 		return false
 	}
+	absoluteURI, err := requestURI.GetAbsoluteURI()
+	if err == nil {
+		for _, name := range p.names {
+			if absoluteURI.String() == name {
+				return true
+			}
+		}
+	}
+
 	sipUri, err := requestURI.GetSIPURI()
 	if err == nil {
-		return sipUri.Host == msg.ReceivedFrom.GetAddress() && sipUri.GetPort() == msg.ReceivedFrom.GetPort()
+		if sipUri.Host == msg.ReceivedFrom.GetAddress() && sipUri.GetPort() == msg.ReceivedFrom.GetPort() {
+			return true
+		}
+		for _, name := range p.names {
+			pos := strings.Index(name, "@")
+			if pos == -1 {
+				if sipUri.Host == name {
+					return true
+				}
+			} else {
+				if sipUri.Host == name[pos+1:] && sipUri.User == name[0:pos] {
+					return true
+				}
+			}
+		}
 	}
-	absoluteURI, err := requestURI.GetAbsoluteURI()
-	return err == nil && p.name == absoluteURI.String()
+	return false
 
 }
 
@@ -78,10 +101,10 @@ func (p *Proxy) handleMessage(msg *Message, from *ProxyItem) {
 		} else {
 			host, port, transport, err := p.getNextRequestHop(msg)
 			log.Info("Not my request, get next hop, host=", host, ",port=", port, ",transport=", transport)
-			serverTrans, ok := p.selfLearnRoute.GetRoute( host )
+			serverTrans, ok := p.selfLearnRoute.GetRoute(host)
 			if ok {
-				p.addVia( msg, serverTrans )
-				p.addRecordRoute( msg, serverTrans )
+				p.addVia(msg, serverTrans)
+				p.addRecordRoute(msg, serverTrans)
 			}
 			if err != nil {
 				log.Error("Fail to find the next hop for request:", msg)
@@ -94,7 +117,7 @@ func (p *Proxy) handleMessage(msg *Message, from *ProxyItem) {
 		msg.PopVia()
 		host, port, transport, err := p.getNextReponseHop(msg)
 		if err != nil {
-			log.WithFields(log.Fields{"message": msg }).Error("Fail to find the next hop for response")
+			log.WithFields(log.Fields{"message": msg}).Error("Fail to find the next hop for response")
 		} else {
 			log.Info("Send response")
 			p.sendMessage(host, port, transport, msg)
@@ -102,8 +125,8 @@ func (p *Proxy) handleMessage(msg *Message, from *ProxyItem) {
 	}
 }
 
-func (p *Proxy) addVia(msg *Message, transport ServerTransport ) {
-	viaParam := CreateViaParam( transport.GetProtocol(), transport.GetAddress(), transport.GetPort() )
+func (p *Proxy) addVia(msg *Message, transport ServerTransport) {
+	viaParam := CreateViaParam(transport.GetProtocol(), transport.GetAddress(), transport.GetPort())
 	branch, err := CreateBranch()
 	if err != nil {
 		log.Error("Fail to create branch parameter")
@@ -133,7 +156,7 @@ func (p *Proxy) sendToBackend(msg *Message) {
 		log.Error("Fail to find the backend for my message\n", msg)
 	} else {
 		transport := backendItem.transports[0]
-		p.addVia(msg, transport )
+		p.addVia(msg, transport)
 		p.addRecordRoute(msg, transport)
 		err := backendItem.backend.Send(msg)
 		if err != nil {
@@ -235,10 +258,10 @@ func (p *Proxy) sendMessage(host string, port int, transport string, msg *Messag
 	}
 	t, err := p.findClientTransport(ip, port, transport)
 	if err == nil {
-		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg }).Info("Suceed to send" )
+		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg}).Info("Suceed to send")
 		t.Send(msg)
 	} else {
-		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg }).Error("Fail to find the transport by ", transport)
+		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg}).Error("Fail to find the transport by ", transport)
 	}
 }
 
@@ -248,11 +271,12 @@ func NewProxyItem(address string,
 	tcpPort int,
 	backends []string,
 	dests []string,
+	receivedSupport bool,
 	defRoute bool,
 	selfLearnRoute *SelfLearnRoute) (*ProxyItem, error) {
 	transports := make([]ServerTransport, 0)
 	if udpPort > 0 {
-		transports = append(transports, NewUDPServerTransport(address, udpPort, selfLearnRoute))
+		transports = append(transports, NewUDPServerTransport(address, udpPort, receivedSupport, selfLearnRoute))
 	}
 	backend, err := CreateBackend(fmt.Sprintf("%s:%d", address, 0), backends)
 	if err != nil {

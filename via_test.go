@@ -40,3 +40,32 @@ func TestCreateViaParam(t *testing.T) {
 	viaParam.SetBranch(branch)
 	fmt.Println(viaParam.String())
 }
+
+func TestParseVia3(t *testing.T) {
+	via, err := ParseVia("SIP/2.0/UDP 10.244.2.174:5060;branch=z9hG4bK-343034-8ae1b84c48a3a15106a4bcade0030d29;rport=9999;received=192.168.1.72")
+	if err != nil {
+		t.Fail()
+	}
+
+	viaParam, err := via.GetParam(0)
+	if err != nil {
+		t.Fail()
+	}
+
+	host, err := viaParam.GetReceived()
+
+	if err != nil {
+		t.Fail()
+	}
+
+	port, err := viaParam.GetRPort()
+	if err != nil {
+		port = viaParam.GetPort()
+	}
+
+	if viaParam.HasParam("rport") {
+		fmt.Println("rport param is supported")
+	}
+
+	fmt.Printf("host=%s, port=%d\n", host, port)
+}
