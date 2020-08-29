@@ -116,18 +116,18 @@ func (s *SIPURI) GetParameter(name string) (string, error) {
 	return "", fmt.Errorf("No such parameter%s", name)
 }
 
-func (s *SIPURI)AddParameter( name string, value string) {
-	s.Parameters = append( s.Parameters, KeyValue{ Key: name, Value: value } )
+func (s *SIPURI) AddParameter(name string, value string) {
+	s.Parameters = append(s.Parameters, KeyValue{Key: name, Value: value})
 }
 
-func (s *SIPURI)SetParameter( name string, value string) {
+func (s *SIPURI) SetParameter(name string, value string) {
 	for _, param := range s.Parameters {
-                if param.Key == name {
+		if param.Key == name {
 			param.Value = value
 			return
-                }
-        }
-	s.AddParameter( name, value )
+		}
+	}
+	s.AddParameter(name, value)
 }
 
 func (s *SIPURI) GetTransport() string {

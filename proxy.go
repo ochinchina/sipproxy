@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"strings"
@@ -20,18 +21,22 @@ type Proxy struct {
 	items          []*ProxyItem
 	clientTransMgr *ClientTransportMgr
 	selfLearnRoute *SelfLearnRoute
+	msgChannel     chan *RawMessage
 }
 
 func NewProxy(name string,
 	preConfigRoute *PreConfigRoute,
 	resolver *PreConfigHostResolver,
 	selfLearnRoute *SelfLearnRoute) *Proxy {
-	return &Proxy{names: strings.Split(name, ","),
+	proxy := &Proxy{names: strings.Split(name, ","),
 		preConfigRoute: preConfigRoute,
 		resolver:       resolver,
 		items:          make([]*ProxyItem, 0),
 		clientTransMgr: NewClientTransportMgr(),
-		selfLearnRoute: selfLearnRoute}
+		selfLearnRoute: selfLearnRoute,
+		msgChannel:     make(chan *RawMessage, 10000)}
+	go proxy.receiveAndProcessMessage()
+	return proxy
 }
 
 func (p *Proxy) AddItem(item *ProxyItem) {
@@ -48,11 +53,26 @@ func (p *Proxy) Start() error {
 	return nil
 }
 
-func (p *Proxy) startItem(item *ProxyItem) error {
-	return item.start(func(msg *Message) {
-		p.handleMessage(msg, item)
-	})
+// HandleMessage implement the MessageHandler.HandleMessage() method
+func (p *Proxy) HandleMessage(msg *RawMessage) {
+	p.msgChannel <- msg
+}
 
+func (p *Proxy) receiveAndProcessMessage() {
+
+	for {
+		select {
+		case rawMsg := <-p.msgChannel:
+			msg, err := p.parseMessage(rawMsg)
+			if err == nil {
+				p.handleMessage(msg)
+			}
+		}
+	}
+
+}
+func (p *Proxy) startItem(item *ProxyItem) error {
+	return item.start(p)
 }
 
 func (p *Proxy) isMyMessage(msg *Message) bool {
@@ -92,8 +112,55 @@ func (p *Proxy) isMyMessage(msg *Message) bool {
 
 }
 
-func (p *Proxy) handleMessage(msg *Message, from *ProxyItem) {
-	log.Info(msg)
+func (p *Proxy) parseMessage(rawMessage *RawMessage) (*Message, error) {
+	msg, err := ParseMessage(*rawMessage.Message)
+	if err != nil {
+		log.Error("Fail to parse sip message ", string(*rawMessage.Message))
+		return nil, errors.New("Fail to parse sip message")
+	}
+	msg.ReceivedFrom = rawMessage.From
+	p.selfLearnRoute.AddRoute(rawMessage.PeerAddr, rawMessage.From)
+	msg.ForEachViaParam(func(viaParam *ViaParam) {
+		p.selfLearnRoute.AddRoute(viaParam.Host, rawMessage.From)
+	})
+	// set the received parameters
+	if msg.IsRequest() && rawMessage.ReceivedSupport {
+		via, err := msg.GetVia()
+		if err != nil {
+			log.Error("Fail to find Via header in request")
+			return nil, err
+		}
+		viaParam, err := via.GetParam(0)
+		if err != nil {
+			log.Error("Fail to find via-param in Via header")
+			return nil, err
+		}
+		viaParam.SetReceived(rawMessage.PeerAddr)
+		if viaParam.HasParam("rport") {
+			viaParam.SetParam("rport", fmt.Sprintf("%d", rawMessage.PeerPort))
+		}
+	}
+	// The proxy will inspect the URI in the topmost Route header
+	// field value.  If it indicates this proxy, the proxy removes it
+	// from the Route header field (this route node has been
+	// reached).
+	route, err := msg.GetRoute()
+	if err == nil {
+		routeParam, err := route.GetRouteParam(0)
+		if err == nil {
+			sipUri, err := routeParam.GetAddress().GetAddress().GetSIPURI()
+			if err == nil && sipUri.Host == rawMessage.From.GetAddress() && sipUri.GetPort() == rawMessage.From.GetPort() {
+				log.WithFields(log.Fields{"route-param": routeParam}).Info("remove top route item because the top item is my address")
+				msg.PopRoute()
+			}
+		}
+	}
+	return msg, nil
+
+}
+
+func (p *Proxy) handleMessage(msg *Message) {
+	log.Debug( msg )
 	if msg.IsRequest() {
 		if p.isMyMessage(msg) {
 			log.Info("it is my request")
@@ -196,7 +263,6 @@ func (p *Proxy) getNextRequestHopByConfig(msg *Message) (host string, port int, 
 	}
 	transport, host, port, err = p.preConfigRoute.FindRoute(destHost)
 	return
-
 }
 
 func (P *Proxy) getNextRequestHopByRoute(msg *Message) (host string, port int, transport string, err error) {
@@ -258,7 +324,7 @@ func (p *Proxy) sendMessage(host string, port int, transport string, msg *Messag
 	}
 	t, err := p.findClientTransport(ip, port, transport)
 	if err == nil {
-		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg}).Info("Suceed to send")
+		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg}).Debug("Suceed to send")
 		t.Send(msg)
 	} else {
 		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg}).Error("Fail to find the transport by ", transport)

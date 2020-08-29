@@ -19,18 +19,18 @@ func TestSIPURIParse(t *testing.T) {
 }
 
 func TestSIPURIAddParameter(t *testing.T) {
-	sipUri, err := ParseSipURI("sip:alice@atlanta.com" )
+	sipUri, err := ParseSipURI("sip:alice@atlanta.com")
 	if err != nil {
 		t.Fail()
 	}
-	sipUri.AddParameter( "lr", "" )
-	sipUri.AddParameter( "ttl", "100" )
-	sipUri, err = ParseSipURI( sipUri.String() )
+	sipUri.AddParameter("lr", "")
+	sipUri.AddParameter("ttl", "100")
+	sipUri, err = ParseSipURI(sipUri.String())
 	if v, err := sipUri.GetParameter("ttl"); err != nil && v != "100" {
-                t.Fail()
-        }
-	if _, err := sipUri.GetParameter( "lr" ); err != nil {
 		t.Fail()
 	}
-	fmt.Println( sipUri )
+	if _, err := sipUri.GetParameter("lr"); err != nil {
+		t.Fail()
+	}
+	fmt.Println(sipUri)
 }

@@ -1,13 +1,9 @@
 package main
 
-import (
-)
+import ()
 
 type Dialog struct {
-	callID string
-	localTag string
+	callID    string
+	localTag  string
 	remoteTag string
 }
-
-
-

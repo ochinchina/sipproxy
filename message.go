@@ -5,17 +5,17 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"io"
 	"strconv"
 	"strings"
-	log "github.com/sirupsen/logrus"
 )
 
 type RequestLine struct {
-	method  string
+	method string
 	// request-uri and addr-spec have same syntax
 	requestURI *AddrSpec
-	version string
+	version    string
 }
 
 type StatusLine struct {
@@ -30,10 +30,10 @@ type Header struct {
 }
 
 type Message struct {
-	request  *RequestLine
-	response *StatusLine
-	headers  []*Header
-	body     []byte
+	request      *RequestLine
+	response     *StatusLine
+	headers      []*Header
+	body         []byte
 	ReceivedFrom ServerTransport
 }
 
@@ -60,7 +60,8 @@ func (ch *compactHeaderNames) GetCompact(name string) (string, bool) {
 }
 
 var compactHdrNames *compactHeaderNames = nil
-var finalResponseStatusCodes  map[int]bool = map[int]bool{ 2:true, 3: true, 4: true, 5: true, 6: true }
+var finalResponseStatusCodes map[int]bool = map[int]bool{2: true, 3: true, 4: true, 5: true, 6: true}
+
 func init() {
 	compactHdrNames = NewCompactHeaderNames()
 	compactHdrNames.AddCompact("Accept-Contact", "a")
@@ -81,30 +82,30 @@ func init() {
 }
 func NewMessage() *Message {
 	return &Message{request: nil,
-			response: nil,
-			headers: make([]*Header, 0),
-			body: make([]byte, 0),
-			ReceivedFrom: nil }
+		response:     nil,
+		headers:      make([]*Header, 0),
+		body:         make([]byte, 0),
+		ReceivedFrom: nil}
 }
 
-func NewRequest(method string, uri string, version string) (*Message, error ) {
-	requestURI, err := ParseAddrSpec( uri )
+func NewRequest(method string, uri string, version string) (*Message, error) {
+	requestURI, err := ParseAddrSpec(uri)
 	if err != nil {
 		return nil, err
 	}
 	return &Message{request: &RequestLine{method: method, requestURI: requestURI, version: version},
-		response: nil,
-		headers:  make([]*Header, 0),
-		body:     make([]byte, 0),
-		ReceivedFrom: nil }, nil
+		response:     nil,
+		headers:      make([]*Header, 0),
+		body:         make([]byte, 0),
+		ReceivedFrom: nil}, nil
 }
 
 func NewResponseOf(request *Message, statusCode int, reason string) *Message {
 	return &Message{request: nil,
-		response: &StatusLine{version: request.request.version, statusCode: statusCode, reason: reason},
-		headers:  make([]*Header, 0),
-		body:     make([]byte, 0),
-		ReceivedFrom: nil }
+		response:     &StatusLine{version: request.request.version, statusCode: statusCode, reason: reason},
+		headers:      make([]*Header, 0),
+		body:         make([]byte, 0),
+		ReceivedFrom: nil}
 }
 
 func readLine(reader *bufio.Reader) ([]byte, error) {
@@ -134,7 +135,7 @@ func isRequestLine(line string) bool {
 func parseRequestLine(line string) (*RequestLine, error) {
 	fields := strings.Fields(line)
 	if len(fields) == 3 {
-		requestURI, err := ParseAddrSpec( fields[1] )
+		requestURI, err := ParseAddrSpec(fields[1])
 		if err != nil {
 			return nil, err
 		}
@@ -181,7 +182,7 @@ func ParseMessage(b []byte) (*Message, error) {
 			} else {
 				response, err := parseStatusLine(line)
 				if err != nil {
-					log.WithFields( log.Fields{ "error": err } ).Error( "Fail to parse status line:", line )
+					log.WithFields(log.Fields{"error": err}).Error("Fail to parse status line:", line)
 					return nil, err
 				}
 				msg.response = response
@@ -226,7 +227,7 @@ func (m *Message) isSameHeader(name_1, name_2 string) bool {
 
 func (m *Message) GetHeader(name string) (*Header, error) {
 	for _, header := range m.headers {
-		if m.isSameHeader( header.name, name ) {
+		if m.isSameHeader(header.name, name) {
 			return header, nil
 		}
 	}
@@ -235,7 +236,7 @@ func (m *Message) GetHeader(name string) (*Header, error) {
 
 func (m *Message) findHeaderPos(name string) (int, error) {
 	for index, header := range m.headers {
-		if m.isSameHeader( header.name, name ) {
+		if m.isSameHeader(header.name, name) {
 			return index, nil
 		}
 	}
@@ -268,7 +269,7 @@ func (m *Message) GetHeaderInt(name string) (int, error) {
 // return the value of the header
 func (m *Message) RemoveHeader(name string) (interface{}, error) {
 	for index, header := range m.headers {
-		if m.isSameHeader( header.name, name ) {
+		if m.isSameHeader(header.name, name) {
 			m.headers = append(m.headers[0:index], m.headers[index+1:]...)
 			return header.value, nil
 		}
@@ -332,7 +333,7 @@ func (m *Message) PopRoute() error {
 
 func (m *Message) findViaInsertPos() int {
 	for index, header := range m.headers {
-		if m.isSameHeader( header.name, "Via" ) {
+		if m.isSameHeader(header.name, "Via") {
 			return index
 		}
 	}
@@ -371,25 +372,25 @@ func (m *Message) GetVia() (*Via, error) {
 	return nil, errors.New("The header value type is not string or Via")
 }
 
-func (m *Message)GetCSeq()( *CSeq, error ) {
+func (m *Message) GetCSeq() (*CSeq, error) {
 	header, err := m.GetHeader("CSeq")
-        if err != nil {
-                return nil, err
-        }
+	if err != nil {
+		return nil, err
+	}
 
-        if v, ok := header.value.(*CSeq); ok {
-                return v, nil
-        }
-        if s, ok := header.value.(string); ok {
-                v, err := ParseCSeq(s)
-                if err != nil {
-                        return nil, err
-                }
-                header.value = v
-                return v, nil
+	if v, ok := header.value.(*CSeq); ok {
+		return v, nil
+	}
+	if s, ok := header.value.(string); ok {
+		v, err := ParseCSeq(s)
+		if err != nil {
+			return nil, err
+		}
+		header.value = v
+		return v, nil
 
-        }
-        return nil, errors.New("The header value type is not string or CSeq")
+	}
+	return nil, errors.New("The header value type is not string or CSeq")
 }
 
 // PopVia remove first via
@@ -407,33 +408,33 @@ func (m *Message) PopVia() error {
 	}
 }
 
-func (m *Message) ForEachVia( viaProcessor func( *Via ) ) {
+func (m *Message) ForEachVia(viaProcessor func(*Via)) {
 	for _, header := range m.headers {
-                if ! m.isSameHeader( header.name, "Via" ) {
-                        continue
-                }
+		if !m.isSameHeader(header.name, "Via") {
+			continue
+		}
 		if v, ok := header.value.(*Via); ok {
-               		viaProcessor( v ) 
-        	}
-        	if s, ok := header.value.(string); ok {
-                	v, err := ParseVia(s)
-                	if err != nil {
-                       		continue
-                	}
-                	header.value = v
-			viaProcessor( v )
-        	}
-        }
+			viaProcessor(v)
+		}
+		if s, ok := header.value.(string); ok {
+			v, err := ParseVia(s)
+			if err != nil {
+				continue
+			}
+			header.value = v
+			viaProcessor(v)
+		}
+	}
 
 }
 
-func (m *Message) ForEachViaParam( handler func( *ViaParam ) ) {
-	m.ForEachVia( func( via *Via ) {
+func (m *Message) ForEachViaParam(handler func(*ViaParam)) {
+	m.ForEachVia(func(via *Via) {
 		n := via.Size()
 		for i := 0; i < n; i++ {
-			param, err := via.GetParam( i )
+			param, err := via.GetParam(i)
 			if err == nil {
-				handler( param )
+				handler(param)
 			}
 		}
 	})
@@ -515,10 +516,9 @@ func (m *Message) IsRequest() bool {
 	return m.request != nil
 }
 
-
-func (m *Message) GetRequestURI() ( *AddrSpec, error ) {
+func (m *Message) GetRequestURI() (*AddrSpec, error) {
 	if m.request == nil {
-		return nil, errors.New( "Not a request" )
+		return nil, errors.New("Not a request")
 	}
 	return m.request.requestURI, nil
 }
@@ -526,13 +526,14 @@ func (m *Message) GetRequestURI() ( *AddrSpec, error ) {
 func (m *Message) IsResponse() bool {
 	return m.response != nil
 }
+
 //
 // All 2xx, 3xx, 4xx, 5xx and 6xx responses are final.
 func (m *Message) IsFinalResponse() bool {
-	if m.response == nil  {
+	if m.response == nil {
 		return false
 	}
 
-	value, ok := finalResponseStatusCodes[ m.response.statusCode ]
+	value, ok := finalResponseStatusCodes[m.response.statusCode]
 	return ok && value
 }

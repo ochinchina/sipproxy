@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -19,13 +18,13 @@ type HostIp struct {
 type ProxyConfig struct {
 	Name    string
 	Listens []struct {
-		Address         string
-		UDPPort         int      `yaml:"udp-port,omitempty"`
-		TCPPort         int      `yaml:"tcp-port,omitempty"`
-		Backends        []string `yaml:",omitempty"`
-		Dests           []string `yaml:",omitempty"`
-		NoReceived bool `yaml:"no-received,omitempty"`
-		defRoute        bool     `yaml:"def-route,omitempty"`
+		Address    string
+		UDPPort    int      `yaml:"udp-port,omitempty"`
+		TCPPort    int      `yaml:"tcp-port,omitempty"`
+		Backends   []string `yaml:",omitempty"`
+		Dests      []string `yaml:",omitempty"`
+		NoReceived bool     `yaml:"no-received,omitempty"`
+		defRoute   bool     `yaml:"def-route,omitempty"`
 	}
 	Route []struct {
 		Dests    []string
@@ -64,6 +63,7 @@ func initLog(logFile string, strLevel string, logSize int, backups int) {
 	if len(logFile) <= 0 {
 		log.SetOutput(os.Stdout)
 	} else {
+		log.SetFormatter(&log.TextFormatter{DisableColors: true, FullTimestamp: true})
 		log.SetOutput(&lumberjack.Logger{Filename: logFile,
 			MaxSize:    logSize,
 			MaxBackups: backups})
@@ -86,9 +86,8 @@ func loadConfig(fileName string) (*ProxiesConfigure, error) {
 		return nil, err
 	}
 
-	b, err := yaml.Marshal(r)
-	fmt.Println( r )
-	log.Debug("Success load configuration file:\n", string(b))
+	//b, err := yaml.Marshal(r)
+	//log.Debug("Success load configuration file:\n", string(b))
 	return r, nil
 
 }
@@ -103,6 +102,8 @@ func startProxies(c *cli.Context) error {
 	logSize := c.Int("log-size")
 	backups := c.Int("log-backups")
 	initLog(fileName, strLevel, logSize, backups)
+	b, _ := yaml.Marshal(config)
+	log.Debug("Success load configuration file:\n", string(b))
 	for _, proxy := range config.Proxies {
 		preConfigRoute := createPreConfigRoute(proxy)
 		resolver := createPreConfigHostResolver(config.Hosts, proxy)

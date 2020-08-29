@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"net"
@@ -18,7 +19,6 @@ type Backend interface {
 
 type RoundRobinBackend struct {
 	sync.Mutex
-	msgChannel chan *Message
 	index      int
 	backends   []Backend
 	backendMap map[string]Backend
@@ -52,7 +52,7 @@ func CreateBackend(localhostport string, addresses []string) (Backend, error) {
 				host := u.Host[0:pos]
 				port := u.Host[pos+1:]
 				if isIPAddress(host) {
-					backend, err := NewUDPBackend( localhostport, u.Host)
+					backend, err := NewUDPBackend(localhostport, u.Host)
 					if err != nil {
 						return nil, err
 					}
@@ -71,12 +71,12 @@ func CreateBackend(localhostport string, addresses []string) (Backend, error) {
 
 }
 
-func NewUDPBackend( localhostport string, hostport string) (*UDPBackend, error) {
+func NewUDPBackend(localhostport string, hostport string) (*UDPBackend, error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", hostport)
 	if err != nil {
 		return nil, err
 	}
-	addr, err := net.ResolveUDPAddr("udp", localhostport )
+	addr, err := net.ResolveUDPAddr("udp", localhostport)
 	if err != nil {
 		return nil, err
 	}
@@ -122,48 +122,12 @@ func (b *UDPBackend) Close() {
 }
 
 func NewRoundRobinBackend() *RoundRobinBackend {
-	rb := &RoundRobinBackend{msgChannel: make(chan *Message, 1000),
-		index:      0,
+	rb := &RoundRobinBackend{index: 0,
 		backends:   make([]Backend, 0),
 		backendMap: make(map[string]Backend)}
-	go rb.takeAndSendMessage()
 	return rb
 }
 
-func (rb *RoundRobinBackend) takeAndSendMessage() {
-	for {
-		select {
-		case msg, more := <-rb.msgChannel:
-			if more {
-				rb.doSendMessage(msg)
-			} else {
-				return
-			}
-		}
-	}
-
-}
-
-func (rb *RoundRobinBackend) doSendMessage(msg *Message) {
-	index, err := rb.getNextBackendIndex()
-	if err != nil {
-		log.WithFields(log.Fields{"error": err}).Error("Fail to send message")
-		return
-	}
-
-	n := rb.getBackendCount()
-	for ; n > 0; n-- {
-		backend, err := rb.getBackend(index)
-		index++
-		if err == nil {
-			err = backend.Send(msg)
-			if err == nil {
-				break
-			}
-		}
-	}
-
-}
 func (rb *RoundRobinBackend) AddBackend(backend Backend) {
 	rb.Lock()
 	defer rb.Unlock()
@@ -188,8 +152,24 @@ func (rb *RoundRobinBackend) RemoveBackend(address string) {
 }
 
 func (rb *RoundRobinBackend) Send(msg *Message) error {
-	rb.msgChannel <- msg
-	return nil
+	index, err := rb.getNextBackendIndex()
+	if err != nil {
+		log.WithFields(log.Fields{"error": err}).Error("Fail to send message")
+		return errors.New("Fail to get next backend")
+	}
+
+	n := rb.getBackendCount()
+	for ; n > 0; n-- {
+		backend, err := rb.getBackend(index)
+		index++
+		if err == nil {
+			err = backend.Send(msg)
+			if err == nil {
+				return nil
+			}
+		}
+	}
+	return errors.New("Fail to send msg to all the backend")
 }
 
 func (rb *RoundRobinBackend) GetAddress() string {

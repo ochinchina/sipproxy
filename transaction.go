@@ -7,13 +7,11 @@ type TransactionMgr struct {
 
 type ClientTransaction struct {
 	TransId string
-	Method string
+	Method  string
 }
 
 type ServerTransaction struct {
 	TransId string
-	SentBy string
-	Method string
+	SentBy  string
+	Method  string
 }
-
-
