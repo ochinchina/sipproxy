@@ -1,24 +1,27 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 )
 
 // RawMessage raw sip message
 type RawMessage struct {
-	PeerAddr        string
-	PeerPort        int
-	Message         *[]byte
+	PeerAddr string
+	PeerPort int
+	//Message         *[]byte
+	Message         *Message
 	From            ServerTransport
 	ReceivedSupport bool
 }
 
-func NewRawMessage(peerAddr string, peerPort int, from ServerTransport, receivedSupport bool, msg *[]byte) *RawMessage {
+func NewRawMessage(peerAddr string, peerPort int, from ServerTransport, receivedSupport bool, msg *Message) *RawMessage {
 	return &RawMessage{
 		PeerAddr:        peerAddr,
 		PeerPort:        peerPort,
@@ -29,7 +32,8 @@ func NewRawMessage(peerAddr string, peerPort int, from ServerTransport, received
 }
 
 type MessageHandler interface {
-	HandleMessage(msg *RawMessage)
+	HandleRawMessage(msg *RawMessage)
+	HandleMessage(msg *Message)
 }
 
 type ServerTransport interface {
@@ -49,6 +53,14 @@ type UDPServerTransport struct {
 	addr            string
 	port            int
 	conn            *net.UDPConn
+	receivedSupport bool
+	selfLearnRoute  *SelfLearnRoute
+	msgHandler      MessageHandler
+}
+
+type TCPServerTransport struct {
+	addr            string
+	port            int
 	receivedSupport bool
 	selfLearnRoute  *SelfLearnRoute
 	msgHandler      MessageHandler
@@ -176,8 +188,12 @@ func (u *UDPServerTransport) receiveMessage() {
 		address := peerAddr.IP.String()
 		port := peerAddr.Port
 		log.WithFields(log.Fields{"length": n, "address": address, "port": port}).Info("a UDP packet is received")
-		b := buf[0:n]
-		u.msgHandler.HandleMessage(NewRawMessage(address, port, u, u.receivedSupport, &b))
+		reader := bufio.NewReaderSize(bytes.NewBuffer(buf), n)
+		msg, err := ParseMessage(reader)
+		if err == nil {
+			u.msgHandler.HandleRawMessage(NewRawMessage(address, port, u, u.receivedSupport, msg))
+		}
+
 	}
 
 }
@@ -192,4 +208,62 @@ func (u *UDPServerTransport) GetAddress() string {
 
 func (u *UDPServerTransport) GetPort() int {
 	return u.port
+}
+
+func NewTCPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) *TCPServerTransport {
+	return &TCPServerTransport{addr: addr,
+		port:            port,
+		receivedSupport: receivedSupport,
+		selfLearnRoute:  selfLearnRoute}
+}
+
+func (t *TCPServerTransport) Start(msgHandler MessageHandler) error {
+	t.msgHandler = msgHandler
+	hostPort := net.JoinHostPort(t.addr, strconv.Itoa(t.port))
+	ln, err := net.Listen("tcp", hostPort)
+	if err != nil {
+		log.Error("Fail to listen on ", hostPort)
+		return err
+	}
+	log.Info("Succeed listen on ", hostPort)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err == nil {
+				go t.receiveMessage(conn)
+			}
+		}
+	}()
+	return nil
+
+}
+
+func (t *TCPServerTransport) receiveMessage(conn net.Conn) {
+	reader := bufio.NewReader(conn)
+	peerAddr, port, _ := net.SplitHostPort(conn.RemoteAddr().String())
+	peerPort, _ := strconv.Atoi(port)
+	for {
+		msg, err := ParseMessage(reader)
+		if err != nil {
+			break
+		}
+		msg.ReceivedFrom = t
+		t.msgHandler.HandleRawMessage(NewRawMessage(peerAddr, peerPort, t, t.receivedSupport, msg))
+	}
+}
+
+func (t *TCPServerTransport) Send(host string, port int, message *Message) error {
+	return nil
+}
+
+func (t *TCPServerTransport) GetProtocol() string {
+	return "TCP"
+}
+
+func (t *TCPServerTransport) GetAddress() string {
+	return t.addr
+}
+
+func (t *TCPServerTransport) GetPort() int {
+	return t.port
 }

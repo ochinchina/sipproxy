@@ -1,7 +1,9 @@
 package main
 
 import (
-	"errors"
+	//"bytes"
+	//"bufio"
+	//"errors"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"strings"
@@ -54,7 +56,7 @@ func (p *Proxy) Start() error {
 }
 
 // HandleMessage implement the MessageHandler.HandleMessage() method
-func (p *Proxy) HandleMessage(msg *RawMessage) {
+func (p *Proxy) HandleRawMessage(msg *RawMessage) {
 	p.msgChannel <- msg
 }
 
@@ -65,7 +67,7 @@ func (p *Proxy) receiveAndProcessMessage() {
 		case rawMsg := <-p.msgChannel:
 			msg, err := p.parseMessage(rawMsg)
 			if err == nil {
-				p.handleMessage(msg)
+				p.HandleMessage(msg)
 			}
 		}
 	}
@@ -113,11 +115,15 @@ func (p *Proxy) isMyMessage(msg *Message) bool {
 }
 
 func (p *Proxy) parseMessage(rawMessage *RawMessage) (*Message, error) {
-	msg, err := ParseMessage(*rawMessage.Message)
-	if err != nil {
+	//buf := bytes.NewBuffer( *rawMessage.Message )
+	//reader := bufio.NewReader(buf)
+
+	//msg, err := ParseMessage( reader )
+	msg := rawMessage.Message
+	/*if err != nil {
 		log.Error("Fail to parse sip message ", string(*rawMessage.Message))
 		return nil, errors.New("Fail to parse sip message")
-	}
+	}*/
 	msg.ReceivedFrom = rawMessage.From
 	p.selfLearnRoute.AddRoute(rawMessage.PeerAddr, rawMessage.From)
 	msg.ForEachViaParam(func(viaParam *ViaParam) {
@@ -125,42 +131,19 @@ func (p *Proxy) parseMessage(rawMessage *RawMessage) (*Message, error) {
 	})
 	// set the received parameters
 	if msg.IsRequest() && rawMessage.ReceivedSupport {
-		via, err := msg.GetVia()
-		if err != nil {
-			log.Error("Fail to find Via header in request")
-			return nil, err
-		}
-		viaParam, err := via.GetParam(0)
-		if err != nil {
-			log.Error("Fail to find via-param in Via header")
-			return nil, err
-		}
-		viaParam.SetReceived(rawMessage.PeerAddr)
-		if viaParam.HasParam("rport") {
-			viaParam.SetParam("rport", fmt.Sprintf("%d", rawMessage.PeerPort))
-		}
+		msg.SetReceived(rawMessage.PeerAddr, rawMessage.PeerPort)
 	}
 	// The proxy will inspect the URI in the topmost Route header
 	// field value.  If it indicates this proxy, the proxy removes it
 	// from the Route header field (this route node has been
 	// reached).
-	route, err := msg.GetRoute()
-	if err == nil {
-		routeParam, err := route.GetRouteParam(0)
-		if err == nil {
-			sipUri, err := routeParam.GetAddress().GetAddress().GetSIPURI()
-			if err == nil && sipUri.Host == rawMessage.From.GetAddress() && sipUri.GetPort() == rawMessage.From.GetPort() {
-				log.WithFields(log.Fields{"route-param": routeParam}).Info("remove top route item because the top item is my address")
-				msg.PopRoute()
-			}
-		}
-	}
+	msg.TryRemoveTopRoute(rawMessage.From.GetAddress(), rawMessage.From.GetPort())
 	return msg, nil
 
 }
 
-func (p *Proxy) handleMessage(msg *Message) {
-	log.Debug( msg )
+func (p *Proxy) HandleMessage(msg *Message) {
+	log.Debug(msg)
 	if msg.IsRequest() {
 		if p.isMyMessage(msg) {
 			log.Info("it is my request")
@@ -343,6 +326,8 @@ func NewProxyItem(address string,
 	transports := make([]ServerTransport, 0)
 	if udpPort > 0 {
 		transports = append(transports, NewUDPServerTransport(address, udpPort, receivedSupport, selfLearnRoute))
+	} else if tcpPort > 0 {
+		transports = append(transports, NewTCPServerTransport(address, tcpPort, receivedSupport, selfLearnRoute))
 	}
 	backend, err := CreateBackend(fmt.Sprintf("%s:%d", address, 0), backends)
 	if err != nil {

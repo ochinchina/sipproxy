@@ -128,6 +128,27 @@ func readLine(reader *bufio.Reader) ([]byte, error) {
 	}
 }
 
+func isWhiteSpace(b byte) bool {
+	return b == '\t' || b == '\n' || b == '\v' || b == '\f' || b == '\r' || b == ' '
+}
+
+func skipWhiteSpace(reader *bufio.Reader) error {
+	for {
+		b, err := reader.ReadByte()
+		if err != nil {
+			return err
+		}
+		if !isWhiteSpace(b) {
+			err = reader.UnreadByte()
+			if err != nil {
+				return err
+			}
+			break
+		}
+	}
+	return nil
+}
+
 func isRequestLine(line string) bool {
 	return !strings.HasPrefix(line, "SIP/")
 }
@@ -158,11 +179,10 @@ func parseStatusLine(line string) (*StatusLine, error) {
 	}
 }
 
-func ParseMessage(b []byte) (*Message, error) {
-	buf := bytes.NewBuffer(b)
-	reader := bufio.NewReader(buf)
+func ParseMessage(reader *bufio.Reader) (*Message, error) {
 	msg := NewMessage()
 	firstLine := true
+	skipWhiteSpace(reader)
 	for {
 		bLine, err := readLine(reader)
 		if err != nil {
@@ -536,4 +556,38 @@ func (m *Message) IsFinalResponse() bool {
 
 	value, ok := finalResponseStatusCodes[m.response.statusCode]
 	return ok && value
+}
+
+func (m *Message) SetReceived(peerAddr string, peerPort int) error {
+	via, err := m.GetVia()
+	if err != nil {
+		return err
+	}
+	viaParam, err := via.GetParam(0)
+	if err != nil {
+		return err
+	}
+	viaParam.SetReceived(peerAddr)
+	if viaParam.HasParam("rport") {
+		viaParam.SetParam("rport", fmt.Sprintf("%d", peerPort))
+	}
+	return nil
+
+}
+
+func (m *Message) TryRemoveTopRoute(myAddr string, myPort int) error {
+	route, err := m.GetRoute()
+	if err != nil {
+		return err
+	}
+	routeParam, err := route.GetRouteParam(0)
+	if err != nil {
+		return err
+	}
+	sipUri, err := routeParam.GetAddress().GetAddress().GetSIPURI()
+	if err == nil && sipUri.Host == myAddr && sipUri.GetPort() == myPort {
+		log.WithFields(log.Fields{"route-param": routeParam}).Info("remove top route item because the top item is my address")
+		m.PopRoute()
+	}
+	return nil
 }
