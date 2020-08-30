@@ -13,9 +13,8 @@ import (
 
 // RawMessage raw sip message
 type RawMessage struct {
-	PeerAddr string
-	PeerPort int
-	//Message         *[]byte
+	PeerAddr        string
+	PeerPort        int
 	Message         *Message
 	From            ServerTransport
 	ReceivedSupport bool
@@ -27,8 +26,7 @@ func NewRawMessage(peerAddr string, peerPort int, from ServerTransport, received
 		PeerPort:        peerPort,
 		From:            from,
 		ReceivedSupport: receivedSupport,
-		Message:         msg,
-	}
+		Message:         msg}
 }
 
 type MessageHandler interface {
@@ -75,6 +73,13 @@ type UDPClientTransport struct {
 	remoteAddr *net.UDPAddr
 }
 
+type TCPClientTransport struct {
+	addr string
+	conn net.Conn
+}
+
+var SupportedProtocol = map[string]string{"udp": "udp", "tcp": "tcp"}
+
 func NewUDPClientTransport(host string, port int) (*UDPClientTransport, error) {
 	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", host, port))
 	if err != nil {
@@ -117,19 +122,62 @@ func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int
 	c.Lock()
 	defer c.Unlock()
 
-	if strings.EqualFold(protocol, "udp") {
-		fullAddr := fmt.Sprintf("udp://%s:%d", host, port)
-		if trans, ok := c.transports[fullAddr]; ok {
-			return trans, nil
-		}
-		trans, err := NewUDPClientTransport(host, port)
-		if err != nil {
-			return nil, err
-		}
-		c.transports[fullAddr] = trans
+	protocol = strings.ToLower(protocol)
+	if _, ok := SupportedProtocol[protocol]; !ok {
+		return nil, fmt.Errorf("not support %s", protocol)
+	}
+	fullAddr := fmt.Sprintf("%s://%s", protocol, net.JoinHostPort(host, strconv.Itoa(port)))
+	if trans, ok := c.transports[fullAddr]; ok {
 		return trans, nil
 	}
+	trans, err := c.createClientTransport(protocol, host, port)
+	if err != nil {
+		return nil, err
+	}
+	c.transports[fullAddr] = trans
+	return trans, nil
+}
+
+func (c *ClientTransportMgr) createClientTransport(protocol string, host string, port int) (ClientTransport, error) {
+	if protocol == "udp" {
+		return NewUDPClientTransport(host, port)
+	} else if protocol == "tcp" {
+		return NewTCPClientTransport(host, port)
+	}
 	return nil, fmt.Errorf("not support %s", protocol)
+}
+
+func NewTCPClientTransport(host string, port int) (*TCPClientTransport, error) {
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	return &TCPClientTransport{addr: addr,
+		conn: nil}, nil
+}
+
+func (t *TCPClientTransport) Send(msg *Message) error {
+	buf := bytes.NewBuffer(make([]byte, 0))
+	msg.Write(buf)
+	b := buf.Bytes()
+
+	for i := 0; i < 2; i++ {
+		if t.conn == nil {
+			conn, err := net.Dial("tcp", t.addr)
+			if err != nil {
+				log.WithFields(log.Fields{"addr": t.addr}).Error("Fail to connect tcp server")
+				return err
+			}
+			t.conn = conn
+		}
+		_, err := t.conn.Write(b)
+		if err == nil {
+			log.WithFields(log.Fields{"addr": t.addr}).Debug("Succeed to send message to server")
+			return nil
+		}
+		log.WithFields(log.Fields{"addr": t.addr}).Error("Fail to send message to server")
+		t.conn.Close()
+		t.conn = nil
+	}
+	log.WithFields(log.Fields{"addr": t.addr}).Error("Fail to send message to tcp server")
+	return fmt.Errorf("Fail to send message to ", t.addr)
 }
 
 func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) *UDPServerTransport {

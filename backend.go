@@ -29,6 +29,12 @@ type UDPBackend struct {
 	udpConn     *net.UDPConn
 }
 
+type TCPBackend struct {
+	localAddr   string
+	backendAddr string
+	conn        net.Conn
+}
+
 var dynamicHostResolver *DynamicHostResolver
 
 func init() {
@@ -46,20 +52,26 @@ func CreateBackend(localhostport string, addresses []string) (Backend, error) {
 			return nil, err
 		}
 
-		if u.Scheme == "udp" {
+		if u.Scheme == "udp" || u.Scheme == "tcp" {
 			pos := strings.LastIndex(u.Host, ":")
 			if pos != -1 {
 				host := u.Host[0:pos]
 				port := u.Host[pos+1:]
 				if isIPAddress(host) {
-					backend, err := NewUDPBackend(localhostport, u.Host)
+					var backend Backend
+					var err error
+					if u.Scheme == "udp" {
+						backend, err = NewUDPBackend(localhostport, u.Host)
+					} else {
+						backend, err = NewTCPBackend(localhostport, u.Host)
+					}
 					if err != nil {
 						return nil, err
 					}
 					rrBackend.AddBackend(backend)
 				} else {
 					dynamicHostResolver.ResolveHost(host, func(hostname string, newIPs []string, removedIPs []string) {
-						rrBackend.hostIPChanged("udp", localhostport, hostname, newIPs, removedIPs, port)
+						rrBackend.hostIPChanged(u.Scheme, localhostport, hostname, newIPs, removedIPs, port)
 					})
 				}
 			}
@@ -118,6 +130,51 @@ func (b *UDPBackend) Close() {
 		log.WithFields(log.Fields{"address": b.udpConn.RemoteAddr()}).Info("Succeed to close udp backend")
 	} else {
 		log.WithFields(log.Fields{"address": b.udpConn.RemoteAddr()}).Error("Fail to close udp backend")
+	}
+}
+
+func NewTCPBackend(localhostport string, hostport string) (*TCPBackend, error) {
+	return &TCPBackend{localAddr: localhostport,
+		backendAddr: hostport,
+		conn:        nil}, nil
+}
+
+func (t *TCPBackend) Send(msg *Message) error {
+	buf := bytes.NewBuffer(make([]byte, 0))
+	_, err := msg.Write(buf)
+	if err != nil {
+		return err
+	}
+
+	b := buf.Bytes()
+	for i := 0; i < 2; i++ {
+		if t.conn == nil {
+			conn, err := net.Dial("tcp", t.backendAddr)
+			if err != nil {
+				log.WithFields(log.Fields{"backendAddr": t.backendAddr}).Error("Fail to connect backend")
+				return err
+			}
+			t.conn = conn
+		}
+		_, err := t.conn.Write(b)
+		if err == nil {
+			log.WithFields(log.Fields{"backendAddr": t.backendAddr}).Debug("Succeed to send message to backend")
+			return nil
+		}
+		log.WithFields(log.Fields{"backendAddr": t.backendAddr}).Debug("Fail to send message to backend")
+		t.conn.Close()
+		t.conn = nil
+	}
+	return fmt.Errorf("Fail to send message to backend ", t.backendAddr)
+}
+
+func (t *TCPBackend) GetAddress() string {
+	return t.backendAddr
+}
+
+func (t *TCPBackend) Close() {
+	if t.conn != nil {
+		t.conn.Close()
 	}
 }
 

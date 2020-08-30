@@ -1,9 +1,6 @@
 package main
 
 import (
-	//"bytes"
-	//"bufio"
-	//"errors"
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"strings"
@@ -115,15 +112,7 @@ func (p *Proxy) isMyMessage(msg *Message) bool {
 }
 
 func (p *Proxy) parseMessage(rawMessage *RawMessage) (*Message, error) {
-	//buf := bytes.NewBuffer( *rawMessage.Message )
-	//reader := bufio.NewReader(buf)
-
-	//msg, err := ParseMessage( reader )
 	msg := rawMessage.Message
-	/*if err != nil {
-		log.Error("Fail to parse sip message ", string(*rawMessage.Message))
-		return nil, errors.New("Fail to parse sip message")
-	}*/
 	msg.ReceivedFrom = rawMessage.From
 	p.selfLearnRoute.AddRoute(rawMessage.PeerAddr, rawMessage.From)
 	msg.ForEachViaParam(func(viaParam *ViaParam) {

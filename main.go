@@ -65,6 +65,7 @@ func initLog(logFile string, strLevel string, logSize int, backups int) {
 	} else {
 		log.SetFormatter(&log.TextFormatter{DisableColors: true, FullTimestamp: true})
 		log.SetOutput(&lumberjack.Logger{Filename: logFile,
+			LocalTime:  true,
 			MaxSize:    logSize,
 			MaxBackups: backups})
 	}
@@ -86,8 +87,6 @@ func loadConfig(fileName string) (*ProxiesConfigure, error) {
 		return nil, err
 	}
 
-	//b, err := yaml.Marshal(r)
-	//log.Debug("Success load configuration file:\n", string(b))
 	return r, nil
 
 }
