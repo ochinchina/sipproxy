@@ -3,24 +3,34 @@ package main
 import (
 	"fmt"
 	log "github.com/sirupsen/logrus"
+	"net"
+	"strconv"
 	"strings"
 )
 
+type BackendChangeEvent struct {
+	action  string
+	backend Backend
+}
+
 type ProxyItem struct {
 	transports []ServerTransport
-	backend    Backend
+	backend    *RoundRobinBackend
 	dests      []string
 	defRoute   bool
 }
 
 type Proxy struct {
-	names          []string
-	preConfigRoute *PreConfigRoute
-	resolver       *PreConfigHostResolver
-	items          []*ProxyItem
-	clientTransMgr *ClientTransportMgr
-	selfLearnRoute *SelfLearnRoute
-	msgChannel     chan *RawMessage
+	names                []string
+	preConfigRoute       *PreConfigRoute
+	resolver             *PreConfigHostResolver
+	items                []*ProxyItem
+	clientTransMgr       *ClientTransportMgr
+	selfLearnRoute       *SelfLearnRoute
+	msgChannel           chan *RawMessage
+	backendChangeChannel chan *BackendChangeEvent
+	backends             map[string]Backend
+	dialogBasedBackends  *DialogBasedBackend
 }
 
 func NewProxy(name string,
@@ -28,18 +38,22 @@ func NewProxy(name string,
 	resolver *PreConfigHostResolver,
 	selfLearnRoute *SelfLearnRoute) *Proxy {
 	proxy := &Proxy{names: strings.Split(name, ","),
-		preConfigRoute: preConfigRoute,
-		resolver:       resolver,
-		items:          make([]*ProxyItem, 0),
-		clientTransMgr: NewClientTransportMgr(),
-		selfLearnRoute: selfLearnRoute,
-		msgChannel:     make(chan *RawMessage, 10000)}
+		preConfigRoute:       preConfigRoute,
+		resolver:             resolver,
+		items:                make([]*ProxyItem, 0),
+		clientTransMgr:       NewClientTransportMgr(),
+		selfLearnRoute:       selfLearnRoute,
+		msgChannel:           make(chan *RawMessage, 10000),
+		backendChangeChannel: make(chan *BackendChangeEvent, 1000),
+		backends:             make(map[string]Backend),
+		dialogBasedBackends:  NewDialogBasedBackend(600)}
 	go proxy.receiveAndProcessMessage()
 	return proxy
 }
 
 func (p *Proxy) AddItem(item *ProxyItem) {
 	p.items = append(p.items, item)
+	item.backend.AddBackendChangeListener(p)
 }
 
 func (p *Proxy) Start() error {
@@ -62,9 +76,18 @@ func (p *Proxy) receiveAndProcessMessage() {
 	for {
 		select {
 		case rawMsg := <-p.msgChannel:
-			msg, err := p.parseMessage(rawMsg)
+			msg, err := p.handleRawMessage(rawMsg)
 			if err == nil {
+				p.handleDialog(rawMsg.PeerAddr, rawMsg.PeerPort, msg)
 				p.HandleMessage(msg)
+			}
+		case backendChangeEvent := <-p.backendChangeChannel:
+			backend := backendChangeEvent.backend
+			switch backendChangeEvent.action {
+			case "add":
+				p.backends[backend.GetAddress()] = backend
+			case "remove":
+				delete(p.backends, backend.GetAddress())
 			}
 		}
 	}
@@ -111,7 +134,7 @@ func (p *Proxy) isMyMessage(msg *Message) bool {
 
 }
 
-func (p *Proxy) parseMessage(rawMessage *RawMessage) (*Message, error) {
+func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 	msg := rawMessage.Message
 	msg.ReceivedFrom = rawMessage.From
 	p.selfLearnRoute.AddRoute(rawMessage.PeerAddr, rawMessage.From)
@@ -129,6 +152,34 @@ func (p *Proxy) parseMessage(rawMessage *RawMessage) (*Message, error) {
 	msg.TryRemoveTopRoute(rawMessage.From.GetAddress(), rawMessage.From.GetPort())
 	return msg, nil
 
+}
+
+func (p *Proxy) handleDialog(peerAddr string, peerPort int, msg *Message) {
+	if !msg.IsResponse() {
+		return
+	}
+	addr := net.JoinHostPort(peerAddr, strconv.Itoa(peerPort))
+	backend, ok := p.backends[addr]
+	if !ok {
+		log.WithFields(log.Fields{"backendAddr": addr}).Warn("Fail to find backend by address")
+		return
+	}
+	if method, err := msg.GetMethod(); err == nil {
+		switch method {
+		case "INVITE":
+			dialog, _ := msg.GetDialog()
+			if dialog != "" {
+				log.WithFields(log.Fields{"backendAddr": addr, "dialog": dialog}).Info("dialog is bind to backend")
+				p.dialogBasedBackends.AddBackend(dialog, backend)
+			}
+		case "BYE":
+			dialog, _ := msg.GetDialog()
+			if dialog != "" {
+				log.WithFields(log.Fields{"backendAddr": addr, "dialog": dialog}).Info("dialog is closed")
+				p.dialogBasedBackends.RemoveDialog(dialog)
+			}
+		}
+	}
 }
 
 func (p *Proxy) HandleMessage(msg *Message) {
@@ -164,6 +215,16 @@ func (p *Proxy) HandleMessage(msg *Message) {
 	}
 }
 
+// HandleBackendAdded implements the method in BackendChangeListener
+func (p *Proxy) HandleBackendAdded(backend Backend) {
+	p.backendChangeChannel <- &BackendChangeEvent{action: "add", backend: backend}
+}
+
+// HandleBackendRemoved implements the method in BackendChangeListener
+func (p *Proxy) HandleBackendRemoved(backend Backend) {
+	p.backendChangeChannel <- &BackendChangeEvent{action: "remove", backend: backend}
+}
+
 func (p *Proxy) addVia(msg *Message, transport ServerTransport) {
 	viaParam := CreateViaParam(transport.GetProtocol(), transport.GetAddress(), transport.GetPort())
 	branch, err := CreateBranch()
@@ -194,15 +255,30 @@ func (p *Proxy) sendToBackend(msg *Message) {
 	if backendItem == nil {
 		log.Error("Fail to find the backend for my message\n", msg)
 	} else {
+		method, err := msg.GetMethod()
+		// try to send message with dialog id
+		if err != nil && method != "INVITE" {
+			dialog, err := msg.GetDialog()
+			if err == nil && dialog != "" {
+				backend, err := p.dialogBasedBackends.GetBackend(dialog)
+				if err != nil {
+					log.WithFields(log.Fields{"dialog": dialog, "error": err}).Warn("Fail to find backend for dialog")
+				} else if backend.Send(msg) == nil {
+					log.WithFields(log.Fields{"backendAddr": backend.GetAddress(), "dialog": dialog}).Info("send dialog to backend")
+					return
+				} else {
+					log.WithFields(log.Fields{"backendAddr": backend.GetAddress(), "dialog": dialog}).Error("Fail to send dialog message to backend")
+				}
+			}
+		}
 		transport := backendItem.transports[0]
 		p.addVia(msg, transport)
 		p.addRecordRoute(msg, transport)
-		err := backendItem.backend.Send(msg)
+		err = backendItem.backend.Send(msg)
 		if err != nil {
 			log.WithFields(log.Fields{"error": err}).Error("Fail to send message to backend")
 		}
 	}
-
 }
 
 func (p *Proxy) findBackendProxyItem() *ProxyItem {
@@ -213,6 +289,7 @@ func (p *Proxy) findBackendProxyItem() *ProxyItem {
 	}
 	return nil
 }
+
 func (p *Proxy) getNextRequestHop(msg *Message) (host string, port int, transport string, err error) {
 	host, port, transport, err = p.getNextRequestHopByRoute(msg)
 	if err == nil {
@@ -318,7 +395,7 @@ func NewProxyItem(address string,
 	} else if tcpPort > 0 {
 		transports = append(transports, NewTCPServerTransport(address, tcpPort, receivedSupport, selfLearnRoute))
 	}
-	backend, err := CreateBackend(fmt.Sprintf("%s:%d", address, 0), backends)
+	backend, err := CreateRoundRobinBackend(net.JoinHostPort(address, "0"), backends)
 	if err != nil {
 		return nil, err
 	}

@@ -297,6 +297,25 @@ func (m *Message) RemoveHeader(name string) (interface{}, error) {
 	return "", fmt.Errorf("No such header %s", name)
 }
 
+func (m *Message) GetFrom() (*FromSpec, error) {
+	header, err := m.GetHeader("From")
+	if err != nil {
+		return nil, err
+	}
+	if t, ok := header.value.(*FromSpec); ok {
+		return t, nil
+	}
+	if s, ok := header.value.(string); ok {
+		t, err := ParseFromSpec(s)
+		if err != nil {
+			return nil, err
+		}
+		header.value = t
+		return t, nil
+	}
+	return nil, errors.New("type of the From header is not string or From")
+}
+
 func (m *Message) GetTo() (*To, error) {
 	header, err := m.GetHeader("To")
 	if err != nil {
@@ -501,6 +520,16 @@ func (m *Message) Write(writer io.Writer) (int, error) {
 	return n, err
 }
 
+func (m *Message) Bytes() ([]byte, error) {
+	buf := bytes.NewBuffer(make([]byte, 256))
+	_, err := m.Write(buf)
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
 func (m *Message) encodeFirstLine(writer io.Writer) (int, error) {
 	if m.request != nil {
 		return fmt.Fprintf(writer, "%s %v %s\r\n", m.request.method, m.request.requestURI, m.request.version)
@@ -534,6 +563,18 @@ func (m *Message) String() string {
 // IsRequest return true if the message is request message
 func (m *Message) IsRequest() bool {
 	return m.request != nil
+}
+
+func (m *Message) GetMethod() (string, error) {
+	if m.request != nil {
+		return m.request.method, nil
+	} else {
+		cseq, err := m.GetCSeq()
+		if err != nil {
+			return "", err
+		}
+		return cseq.Method, nil
+	}
 }
 
 func (m *Message) GetRequestURI() (*AddrSpec, error) {
@@ -590,4 +631,67 @@ func (m *Message) TryRemoveTopRoute(myAddr string, myPort int) error {
 		m.PopRoute()
 	}
 	return nil
+}
+
+// Get the Call-ID header
+func (m *Message) GetCallID() (string, error) {
+	v, err := m.GetHeaderValue("Call-ID")
+	if err != nil {
+		return "", err
+	}
+	if s, ok := v.(string); ok {
+		return s, nil
+	}
+
+	return "", errors.New("Call-ID is not a string")
+}
+
+// Get the Dialog
+func (m *Message) GetDialog() (string, error) {
+	callId, err := m.GetCallID()
+	if err != nil {
+		return "", err
+	}
+	fromSpec, err := m.GetFrom()
+	if err != nil {
+		return "", err
+	}
+
+	from_tag, err := fromSpec.GetTag()
+
+	if err != nil {
+		return "", err
+	}
+
+	to, err := m.GetTo()
+
+	if err != nil {
+		return "", err
+	}
+
+	to_tag, err := to.GetTag()
+
+	if err != nil {
+		return "", err
+	}
+	from_addr, err := fromSpec.GetAddrSpec()
+	if err != nil {
+		return "", err
+	}
+	to_addr, err := to.GetAddrSpec()
+	if err != nil {
+		return "", err
+	}
+	from_addr_s := from_addr.String()
+	to_addr_s := to_addr.String()
+	if from_addr_s < to_addr_s {
+		return NewDialog(callId,
+			fmt.Sprintf("%s-%s", from_tag, from_addr_s),
+			fmt.Sprintf("%s-%s", to_tag, to_addr_s)).String(), nil
+	} else {
+		return NewDialog(callId,
+			fmt.Sprintf("%s-%s", to_tag, to_addr_s),
+			fmt.Sprintf("%s-%s", from_tag, from_addr_s)).String(), nil
+
+	}
 }

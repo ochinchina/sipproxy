@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	log "github.com/sirupsen/logrus"
@@ -9,19 +8,60 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
+
+type BackendChangeListener interface {
+	HandleBackendAdded(backend Backend)
+	HandleBackendRemoved(backend Backend)
+}
+
+type BackendChangeListenerMgr struct {
+	sync.Mutex
+	listeners []BackendChangeListener
+}
+
+func NewBackendChangeListenerMgr() *BackendChangeListenerMgr {
+	return &BackendChangeListenerMgr{listeners: make([]BackendChangeListener, 0)}
+}
+
+func (bm *BackendChangeListenerMgr) AddChangeListener(listener BackendChangeListener) {
+	bm.Lock()
+	defer bm.Unlock()
+
+	bm.listeners = append(bm.listeners, listener)
+}
+
+func (bm *BackendChangeListenerMgr) HandleBackendAdded(backend Backend) {
+	bm.Lock()
+	defer bm.Unlock()
+
+	for _, listener := range bm.listeners {
+		listener.HandleBackendAdded(backend)
+	}
+}
+
+func (bm *BackendChangeListenerMgr) HandleBackendRemoved(backend Backend) {
+	bm.Lock()
+	defer bm.Unlock()
+
+	for _, listener := range bm.listeners {
+		listener.HandleBackendRemoved(backend)
+	}
+}
 
 type Backend interface {
 	Send(msg *Message) error
 	GetAddress() string
 	Close()
 }
-
 type RoundRobinBackend struct {
 	sync.Mutex
-	index      int
-	backends   []Backend
-	backendMap map[string]Backend
+	index                    int
+	backends                 []Backend
+	backendMap               map[string]Backend
+	backendChangeListenerMgr *BackendChangeListenerMgr
+	dialogBasedBackend       *DialogBasedBackend
 }
 
 type UDPBackend struct {
@@ -41,7 +81,7 @@ func init() {
 	dynamicHostResolver = NewDynamicHostResolver(2)
 }
 
-func CreateBackend(localhostport string, addresses []string) (Backend, error) {
+func CreateRoundRobinBackend(localhostport string, addresses []string) (*RoundRobinBackend, error) {
 	if len(addresses) <= 0 {
 		return nil, nil
 	}
@@ -80,37 +120,34 @@ func CreateBackend(localhostport string, addresses []string) (Backend, error) {
 		}
 	}
 	return rrBackend, nil
-
 }
 
 func NewUDPBackend(localhostport string, hostport string) (*UDPBackend, error) {
-	udpAddr, err := net.ResolveUDPAddr("udp", hostport)
+	backendAddr, err := net.ResolveUDPAddr("udp", hostport)
 	if err != nil {
 		return nil, err
 	}
-	addr, err := net.ResolveUDPAddr("udp", localhostport)
+	localAddr, err := net.ResolveUDPAddr("udp", localhostport)
 	if err != nil {
 		return nil, err
 	}
-	udpConn, err := net.ListenUDP("udp", addr)
+	udpConn, err := net.ListenUDP("udp", localAddr)
 	if err != nil {
 		return nil, err
 	}
 
-	b := &UDPBackend{backendAddr: udpAddr, udpConn: udpConn}
+	b := &UDPBackend{backendAddr: backendAddr, udpConn: udpConn}
 	return b, nil
 }
 
 func (b *UDPBackend) Send(msg *Message) error {
-	buf := bytes.NewBuffer(make([]byte, 0))
-	n, err := msg.Write(buf)
+	bytes, err := msg.Bytes()
 
 	if err != nil {
-		log.Error("Fail to encode message")
 		return err
 	}
 
-	n, err = b.udpConn.WriteToUDP(buf.Bytes(), b.backendAddr)
+	n, err := b.udpConn.WriteToUDP(bytes, b.backendAddr)
 	if err == nil {
 		log.WithFields(log.Fields{"address": b.backendAddr, "bytes": n}).Info("Succeed send message to backend")
 	} else {
@@ -140,13 +177,11 @@ func NewTCPBackend(localhostport string, hostport string) (*TCPBackend, error) {
 }
 
 func (t *TCPBackend) Send(msg *Message) error {
-	buf := bytes.NewBuffer(make([]byte, 0))
-	_, err := msg.Write(buf)
+	b, err := msg.Bytes()
 	if err != nil {
 		return err
 	}
 
-	b := buf.Bytes()
 	for i := 0; i < 2; i++ {
 		if t.conn == nil {
 			conn, err := net.Dial("tcp", t.backendAddr)
@@ -180,8 +215,9 @@ func (t *TCPBackend) Close() {
 
 func NewRoundRobinBackend() *RoundRobinBackend {
 	rb := &RoundRobinBackend{index: 0,
-		backends:   make([]Backend, 0),
-		backendMap: make(map[string]Backend)}
+		backends:                 make([]Backend, 0),
+		backendMap:               make(map[string]Backend),
+		backendChangeListenerMgr: NewBackendChangeListenerMgr()}
 	return rb
 }
 
@@ -190,12 +226,23 @@ func (rb *RoundRobinBackend) AddBackend(backend Backend) {
 	defer rb.Unlock()
 	rb.backends = append(rb.backends, backend)
 	rb.backendMap[backend.GetAddress()] = backend
+	rb.backendChangeListenerMgr.HandleBackendAdded(backend)
+}
+
+func (rb *RoundRobinBackend) GetBackend(address string) (Backend, error) {
+	rb.Lock()
+	defer rb.Unlock()
+
+	if v, ok := rb.backendMap[address]; ok {
+		return v, nil
+	}
+	return nil, fmt.Errorf("Fail to find backend by %s", address)
 }
 
 func (rb *RoundRobinBackend) RemoveBackend(address string) {
 	rb.Lock()
 	defer rb.Unlock()
-	if _, ok := rb.backendMap[address]; ok {
+	if backend, ok := rb.backendMap[address]; ok {
 		for index, p := range rb.backends {
 			if address == p.GetAddress() {
 				p.Close()
@@ -205,7 +252,20 @@ func (rb *RoundRobinBackend) RemoveBackend(address string) {
 				break
 			}
 		}
+		delete(rb.backendMap, address)
+		rb.backendChangeListenerMgr.HandleBackendRemoved(backend)
 	}
+}
+
+func (rb *RoundRobinBackend) GetAllBackend() map[string]Backend {
+	rb.Lock()
+	defer rb.Unlock()
+
+	r := make(map[string]Backend)
+	for k, v := range rb.backendMap {
+		r[k] = v
+	}
+	return r
 }
 
 func (rb *RoundRobinBackend) Send(msg *Message) error {
@@ -220,10 +280,7 @@ func (rb *RoundRobinBackend) Send(msg *Message) error {
 		backend, err := rb.getBackend(index)
 		index++
 		if err == nil {
-			err = backend.Send(msg)
-			if err == nil {
-				return nil
-			}
+			return backend.Send(msg)
 		}
 	}
 	return errors.New("Fail to send msg to all the backend")
@@ -261,6 +318,15 @@ func (rb *RoundRobinBackend) getBackendCount() int {
 
 }
 
+func (rb *RoundRobinBackend) AddBackendChangeListener(listener BackendChangeListener) {
+	rb.backendChangeListenerMgr.AddChangeListener(listener)
+	rb.Lock()
+	defer rb.Unlock()
+	for _, backend := range rb.backendMap {
+		listener.HandleBackendAdded(backend)
+	}
+}
+
 func (rb *RoundRobinBackend) hostIPChanged(protocol string, localhostport, hostname string, newIPs []string, removedIPs []string, port string) {
 	for _, ip := range newIPs {
 		log.WithFields(log.Fields{"ip": ip}).Info("find a new IP for ", hostname)
@@ -291,5 +357,54 @@ func (rb *RoundRobinBackend) Close() {
 	defer rb.Unlock()
 	for _, p := range rb.backends {
 		p.Close()
+	}
+}
+
+type ExpireBackend struct {
+	backend Backend
+	expire  time.Time
+}
+type DialogBasedBackend struct {
+	timeout time.Duration
+	// map between dialog and the backend
+	backends map[string]*ExpireBackend
+}
+
+func NewDialogBasedBackend(timeoutSeconds int64) *DialogBasedBackend {
+	return &DialogBasedBackend{timeout: time.Duration(timeoutSeconds) * time.Second,
+		backends: make(map[string]*ExpireBackend)}
+}
+
+func (dbb *DialogBasedBackend) GetBackend(dialog string) (Backend, error) {
+	if value, ok := dbb.backends[dialog]; ok {
+		if value.expire.After(time.Now()) {
+			return value.backend, nil
+		}
+		delete(dbb.backends, dialog)
+	}
+	return nil, fmt.Errorf("No backend related with dialog %s", dialog)
+
+}
+
+func (dbb *DialogBasedBackend) AddBackend(dialog string, backend Backend) {
+	expire := time.Now().Add(dbb.timeout)
+	dbb.backends[dialog] = &ExpireBackend{backend: backend, expire: expire}
+	dbb.cleanExpiredDialog()
+}
+
+func (dbb *DialogBasedBackend) RemoveDialog(dialog string) {
+	delete(dbb.backends, dialog)
+}
+
+func (dbb *DialogBasedBackend) cleanExpiredDialog() {
+	expiredDialogs := make(map[string]string)
+	for k, v := range dbb.backends {
+		if v.expire.Before(time.Now()) {
+			expiredDialogs[k] = k
+		}
+	}
+
+	for k, _ := range expiredDialogs {
+		delete(dbb.backends, k)
 	}
 }

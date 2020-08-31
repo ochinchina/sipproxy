@@ -97,9 +97,11 @@ func NewUDPClientTransport(host string, port int) (*UDPClientTransport, error) {
 }
 
 func (u *UDPClientTransport) Send(msg *Message) error {
-	buf := bytes.NewBuffer(make([]byte, 0))
-	msg.Write(buf)
-	n, err := u.conn.WriteToUDP(buf.Bytes(), u.remoteAddr)
+	b, err := msg.Bytes()
+	if err != nil {
+		return err
+	}
+	n, err := u.conn.WriteToUDP(b, u.remoteAddr)
 	if err == nil {
 		log.WithFields(log.Fields{"length": n, "address": u.remoteAddr}).Info("Succeed to send message")
 	} else {
@@ -154,9 +156,10 @@ func NewTCPClientTransport(host string, port int) (*TCPClientTransport, error) {
 }
 
 func (t *TCPClientTransport) Send(msg *Message) error {
-	buf := bytes.NewBuffer(make([]byte, 0))
-	msg.Write(buf)
-	b := buf.Bytes()
+	b, err := msg.Bytes()
+	if err != nil {
+		return err
+	}
 
 	for i := 0; i < 2; i++ {
 		if t.conn == nil {
@@ -195,9 +198,11 @@ func (u *UDPServerTransport) Send(host string, port int, msg *Message) error {
 	if err != nil {
 		return err
 	}
-	buf := bytes.NewBuffer(make([]byte, 0))
-	msg.Write(buf)
-	n, err := u.conn.WriteToUDP(buf.Bytes(), remoteAddr)
+	b, err := msg.Bytes()
+	if err != nil {
+		return err
+	}
+	n, err := u.conn.WriteToUDP(b, remoteAddr)
 	if err == nil {
 		log.WithFields(log.Fields{"length": n, "address": remoteAddr}).Info("Succeed to send message")
 	} else {

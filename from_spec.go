@@ -33,6 +33,10 @@ func ParseFromSpec(s string) (*FromSpec, error) {
 	return fromSpec, nil
 }
 
+func (fs *FromSpec) GetAddrSpec() (*AddrSpec, error) {
+	return fs.nameAddr.Addr, nil
+}
+
 func (fs *FromSpec) String() string {
 	buf := bytes.NewBuffer(make([]byte, 0))
 
