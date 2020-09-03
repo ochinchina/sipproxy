@@ -48,64 +48,119 @@ type ServerTransport interface {
 }
 
 type UDPServerTransport struct {
-	addr            string
-	port            int
+	localAddr       *net.UDPAddr
 	conn            *net.UDPConn
 	receivedSupport bool
 	selfLearnRoute  *SelfLearnRoute
 	msgHandler      MessageHandler
 }
 
+type ConnectionAcceptedListener interface {
+	ConnectionAccepted(conn net.Conn)
+}
 type TCPServerTransport struct {
-	addr            string
-	port            int
-	receivedSupport bool
-	selfLearnRoute  *SelfLearnRoute
-	msgHandler      MessageHandler
+	addr                 string
+	port                 int
+	receivedSupport      bool
+	selfLearnRoute       *SelfLearnRoute
+	msgHandler           MessageHandler
+	connAcceptedListener ConnectionAcceptedListener
 }
 
 type ClientTransport interface {
 	Send(msg *Message) error
 }
 
+type FailOverClientTransport struct {
+	primary   ClientTransport
+	secondary ClientTransport
+}
+
+func NewFailOverClientTransport() *FailOverClientTransport {
+	return &FailOverClientTransport{}
+}
+
+func (fct *FailOverClientTransport) SetPrimary(primary ClientTransport) {
+	fct.primary = primary
+}
+
+func (fct *FailOverClientTransport) SetSecondary(secondary ClientTransport) {
+	fct.secondary = secondary
+}
+
+func (fct *FailOverClientTransport) Send(msg *Message) error {
+	if fct.primary != nil {
+		err := fct.primary.Send(msg)
+		if err == nil {
+			return nil
+		}
+		fct.primary = nil
+	}
+	if fct.secondary != nil {
+		return fct.secondary.Send(msg)
+	}
+	return fmt.Errorf("Fail to send message")
+}
+
+func (fct *FailOverClientTransport) IsConnected() bool {
+	return fct.primary != nil || fct.secondary != nil
+}
+
 type UDPClientTransport struct {
 	conn       *net.UDPConn
+	localAddr  *net.UDPAddr
 	remoteAddr *net.UDPAddr
 }
 
 type TCPClientTransport struct {
-	addr string
-	conn net.Conn
+	addr          string
+	reconnectable bool
+	conn          net.Conn
 }
 
 var SupportedProtocol = map[string]string{"udp": "udp", "tcp": "tcp"}
 
-func NewUDPClientTransport(host string, port int) (*UDPClientTransport, error) {
+func NewUDPClientTransport(host string, port int) *UDPClientTransport {
 	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", host, port))
 	if err != nil {
 		log.WithFields(log.Fields{"host": host, "port": port, "error": err}).Error("Fail to resolve udp host address")
-		return nil, err
+		return nil
 	}
 	laddr, _ := net.ResolveUDPAddr("udp", ":0")
-	conn, err := net.ListenUDP("udp", laddr)
-	if err != nil {
-		log.WithFields(log.Fields{"host": host, "port": port, "error": err}).Error("Fail to dial UDP")
-		return nil, err
-	}
-	ut := &UDPClientTransport{conn: conn, remoteAddr: raddr}
-	return ut, nil
+	return &UDPClientTransport{conn: nil, localAddr: laddr, remoteAddr: raddr}
 }
 
+func NewUDPClientTransportWithConn(conn *net.UDPConn, remoteAddr *net.UDPAddr) *UDPClientTransport {
+	localAddr, _ := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
+	return &UDPClientTransport{conn: conn, localAddr: localAddr, remoteAddr: remoteAddr}
+}
+
+func (u *UDPClientTransport) connect() error {
+	if u.conn == nil {
+		conn, err := net.ListenUDP("udp", u.localAddr)
+		if err != nil {
+			log.WithFields(log.Fields{"localAddr": u.localAddr, "error": err}).Error("Fail to listen on UDP")
+			return err
+		}
+		u.conn = conn
+	}
+	return nil
+
+}
 func (u *UDPClientTransport) Send(msg *Message) error {
+	err := u.connect()
+	if err != nil {
+		return err
+	}
 	b, err := msg.Bytes()
 	if err != nil {
 		return err
 	}
 	n, err := u.conn.WriteToUDP(b, u.remoteAddr)
 	if err == nil {
-		log.WithFields(log.Fields{"length": n, "address": u.remoteAddr}).Info("Succeed to send message")
+		log.WithFields(log.Fields{"length": n, "localAddr": u.localAddr, "remoteAddr": u.remoteAddr, "message": msg}).Info("Succeed to send message")
 	} else {
-		log.WithFields(log.Fields{"error": err}).Error("Fail to send message")
+		log.WithFields(log.Fields{"localAddr": u.localAddr, "remoteAddr": u.remoteAddr, "error": err, "message": msg}).Error("Fail to send message")
 	}
 	return err
 
@@ -113,14 +168,14 @@ func (u *UDPClientTransport) Send(msg *Message) error {
 
 type ClientTransportMgr struct {
 	sync.Mutex
-	transports map[string]ClientTransport
+	transports map[string]*FailOverClientTransport
 }
 
 func NewClientTransportMgr() *ClientTransportMgr {
-	return &ClientTransportMgr{transports: make(map[string]ClientTransport)}
+	return &ClientTransportMgr{transports: make(map[string]*FailOverClientTransport)}
 }
 
-func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int) (ClientTransport, error) {
+func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int) (*FailOverClientTransport, error) {
 	c.Lock()
 	defer c.Unlock()
 
@@ -140,23 +195,35 @@ func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int
 	return trans, nil
 }
 
-func (c *ClientTransportMgr) createClientTransport(protocol string, host string, port int) (ClientTransport, error) {
+func (c *ClientTransportMgr) createClientTransport(protocol string, host string, port int) (*FailOverClientTransport, error) {
+	trans := NewFailOverClientTransport()
 	if protocol == "udp" {
-		return NewUDPClientTransport(host, port)
+		trans.secondary = NewUDPClientTransport(host, port)
+		return trans, nil
 	} else if protocol == "tcp" {
-		return NewTCPClientTransport(host, port)
+		trans.secondary = NewTCPClientTransport(host, port)
+		return trans, nil
 	}
 	return nil, fmt.Errorf("not support %s", protocol)
+
 }
 
-func NewTCPClientTransport(host string, port int) (*TCPClientTransport, error) {
+func NewTCPClientTransport(host string, port int) *TCPClientTransport {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	return &TCPClientTransport{addr: addr,
-		conn: nil}, nil
+		reconnectable: true,
+		conn:          nil}
+}
+
+func NewTCPClientTransportWithConn(conn net.Conn) (*TCPClientTransport, error) {
+	return &TCPClientTransport{addr: conn.RemoteAddr().String(),
+		reconnectable: false,
+		conn:          nil}, nil
 }
 
 func (t *TCPClientTransport) Send(msg *Message) error {
 	b, err := msg.Bytes()
+
 	if err != nil {
 		return err
 	}
@@ -176,25 +243,33 @@ func (t *TCPClientTransport) Send(msg *Message) error {
 			return nil
 		}
 		log.WithFields(log.Fields{"addr": t.addr}).Error("Fail to send message to server")
-		t.conn.Close()
-		t.conn = nil
+		if t.reconnectable {
+			t.conn.Close()
+			t.conn = nil
+		} else {
+			break
+		}
 	}
 	log.WithFields(log.Fields{"addr": t.addr}).Error("Fail to send message to tcp server")
 	return fmt.Errorf("Fail to send message to ", t.addr)
 }
 
-func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) *UDPServerTransport {
+func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) (*UDPServerTransport, error) {
 
 	log.WithFields(log.Fields{"addr": addr, "port": port}).Info("Create new UDP server transport")
-	return &UDPServerTransport{addr: addr,
-		port:            port,
+	localAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(addr, strconv.Itoa(port)))
+	if err != nil {
+		log.WithFields(log.Fields{"addr": addr, "port": port}).Error("Not a valid ip address")
+		return nil, err
+	}
+	return &UDPServerTransport{localAddr: localAddr,
 		receivedSupport: receivedSupport,
 		msgHandler:      nil,
-		selfLearnRoute:  selfLearnRoute}
+		selfLearnRoute:  selfLearnRoute}, nil
 }
 
 func (u *UDPServerTransport) Send(host string, port int, msg *Message) error {
-	remoteAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", host, port))
+	remoteAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return err
 	}
@@ -204,26 +279,22 @@ func (u *UDPServerTransport) Send(host string, port int, msg *Message) error {
 	}
 	n, err := u.conn.WriteToUDP(b, remoteAddr)
 	if err == nil {
-		log.WithFields(log.Fields{"length": n, "address": remoteAddr}).Info("Succeed to send message")
+		log.WithFields(log.Fields{"length": n, "localAddr": u.localAddr, "remoteAddress": remoteAddr}).Info("Succeed to send message")
 	} else {
-		log.WithFields(log.Fields{"error": err}).Error("Fail to send message")
+		log.WithFields(log.Fields{"localAddr": u.localAddr, "remoteAddress": remoteAddr, "error": err}).Error("Fail to send message")
 	}
 	return err
 }
 
 func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 	u.msgHandler = msgHandler
-	udpAddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", u.addr, u.port))
+	conn, err := net.ListenUDP("udp", u.localAddr)
 	if err != nil {
-		log.WithFields(log.Fields{"addr": u.addr}).Error("Not a valid ip address")
-	}
-	u.conn, err = net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		log.WithFields(log.Fields{"addr": u.addr, "port": u.port}).Error("Fail to listen on UDP")
+		log.WithFields(log.Fields{"localAddr": u.localAddr}).Error("Fail to listen on UDP")
 		return err
 	}
-
-	log.WithFields(log.Fields{"addr": u.addr, "port": u.port}).Info("Success to listen on UDP")
+	u.conn = conn
+	log.WithFields(log.Fields{"localAddr": u.localAddr}).Info("Success to listen on UDP")
 	go u.receiveMessage()
 	return nil
 }
@@ -231,16 +302,14 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 func (u *UDPServerTransport) receiveMessage() {
 	for {
 		buf := make([]byte, 1024*64)
-		log.Info("try to read a packet")
 		n, peerAddr, err := u.conn.ReadFromUDP(buf)
-		log.WithFields(log.Fields{"length": n}).Info("read a packet with length")
 		if err != nil {
-			log.WithFields(log.Fields{"addr": u.addr, "port": u.port, "error": err}).Error("Fail to read data")
+			log.WithFields(log.Fields{"localAddr": u.localAddr, "error": err}).Error("Fail to read data")
 			break
 		}
 		address := peerAddr.IP.String()
 		port := peerAddr.Port
-		log.WithFields(log.Fields{"length": n, "address": address, "port": port}).Info("a UDP packet is received")
+		log.WithFields(log.Fields{"length": n, "localAddr": u.localAddr, "remoteAddr": peerAddr}).Info("a UDP packet is received")
 		reader := bufio.NewReaderSize(bytes.NewBuffer(buf), n)
 		msg, err := ParseMessage(reader)
 		if err == nil {
@@ -256,18 +325,26 @@ func (u *UDPServerTransport) GetProtocol() string {
 }
 
 func (u *UDPServerTransport) GetAddress() string {
-	return u.addr
+	host, _, _ := net.SplitHostPort(u.localAddr.String())
+	return host
 }
 
 func (u *UDPServerTransport) GetPort() int {
-	return u.port
+	_, port, _ := net.SplitHostPort(u.localAddr.String())
+	i, _ := strconv.Atoi(port)
+	return i
 }
 
-func NewTCPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) *TCPServerTransport {
+func NewTCPServerTransport(addr string,
+	port int,
+	receivedSupport bool,
+	connAcceptedListener ConnectionAcceptedListener,
+	selfLearnRoute *SelfLearnRoute) *TCPServerTransport {
 	return &TCPServerTransport{addr: addr,
-		port:            port,
-		receivedSupport: receivedSupport,
-		selfLearnRoute:  selfLearnRoute}
+		port:                 port,
+		receivedSupport:      receivedSupport,
+		connAcceptedListener: connAcceptedListener,
+		selfLearnRoute:       selfLearnRoute}
 }
 
 func (t *TCPServerTransport) Start(msgHandler MessageHandler) error {
@@ -279,15 +356,22 @@ func (t *TCPServerTransport) Start(msgHandler MessageHandler) error {
 		return err
 	}
 	log.Info("Succeed listen on ", hostPort)
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err == nil {
-				go t.receiveMessage(conn)
-			}
-		}
-	}()
+	go t.acceptConnection(ln)
 	return nil
+}
+
+func (t *TCPServerTransport) acceptConnection(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err == nil {
+			log.WithFields(log.Fields{"localAddr": ln.Addr(), "remoteAddr": conn.RemoteAddr()}).Info("Accept a connection")
+			t.connAcceptedListener.ConnectionAccepted(conn)
+			go t.receiveMessage(conn)
+		} else {
+			log.WithFields(log.Fields{"localAddr": ln.Addr(), "error": err}).Error("Fail to accept client connection")
+			break
+		}
+	}
 
 }
 

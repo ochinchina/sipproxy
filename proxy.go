@@ -29,6 +29,7 @@ type Proxy struct {
 	selfLearnRoute       *SelfLearnRoute
 	msgChannel           chan *RawMessage
 	backendChangeChannel chan *BackendChangeEvent
+	connAcceptedChannel  chan net.Conn
 	backends             map[string]Backend
 	dialogBasedBackends  *DialogBasedBackend
 }
@@ -45,6 +46,7 @@ func NewProxy(name string,
 		selfLearnRoute:       selfLearnRoute,
 		msgChannel:           make(chan *RawMessage, 10000),
 		backendChangeChannel: make(chan *BackendChangeEvent, 1000),
+		connAcceptedChannel:  make(chan net.Conn),
 		backends:             make(map[string]Backend),
 		dialogBasedBackends:  NewDialogBasedBackend(600)}
 	go proxy.receiveAndProcessMessage()
@@ -52,8 +54,10 @@ func NewProxy(name string,
 }
 
 func (p *Proxy) AddItem(item *ProxyItem) {
+	if item.backend != nil {
+		item.backend.AddBackendChangeListener(p)
+	}
 	p.items = append(p.items, item)
-	item.backend.AddBackendChangeListener(p)
 }
 
 func (p *Proxy) Start() error {
@@ -71,6 +75,15 @@ func (p *Proxy) HandleRawMessage(msg *RawMessage) {
 	p.msgChannel <- msg
 }
 
+// ConnectionAccepted implement ConnectionAcceptedListener interface
+func (p *Proxy) ConnectionAccepted(conn net.Conn) {
+	p.connAcceptedChannel <- conn
+}
+
+func (p *Proxy) isBackendAddr(addr string) bool {
+	_, ok := p.backends[addr]
+	return ok
+}
 func (p *Proxy) receiveAndProcessMessage() {
 
 	for {
@@ -88,6 +101,17 @@ func (p *Proxy) receiveAndProcessMessage() {
 				p.backends[backend.GetAddress()] = backend
 			case "remove":
 				delete(p.backends, backend.GetAddress())
+			}
+		case conn := <-p.connAcceptedChannel:
+			host, port, err := net.SplitHostPort(conn.RemoteAddr().String())
+			if err == nil {
+				port_i, err := strconv.Atoi(port)
+				if err == nil {
+					trans, err := p.clientTransMgr.GetTransport("tcp", host, port_i)
+					if err == nil {
+						trans.primary, _ = NewTCPClientTransportWithConn(conn)
+					}
+				}
 			}
 		}
 	}
@@ -137,10 +161,12 @@ func (p *Proxy) isMyMessage(msg *Message) bool {
 func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 	msg := rawMessage.Message
 	msg.ReceivedFrom = rawMessage.From
-	p.selfLearnRoute.AddRoute(rawMessage.PeerAddr, rawMessage.From)
-	msg.ForEachViaParam(func(viaParam *ViaParam) {
-		p.selfLearnRoute.AddRoute(viaParam.Host, rawMessage.From)
-	})
+	if msg.IsRequest() && !p.isBackendAddr(rawMessage.PeerAddr) {
+		p.selfLearnRoute.AddRoute(rawMessage.PeerAddr, rawMessage.From)
+		msg.ForEachViaParam(func(viaParam *ViaParam) {
+			p.selfLearnRoute.AddRoute(viaParam.Host, rawMessage.From)
+		})
+	}
 	// set the received parameters
 	if msg.IsRequest() && rawMessage.ReceivedSupport {
 		msg.SetReceived(rawMessage.PeerAddr, rawMessage.PeerPort)
@@ -183,7 +209,7 @@ func (p *Proxy) handleDialog(peerAddr string, peerPort int, msg *Message) {
 }
 
 func (p *Proxy) HandleMessage(msg *Message) {
-	log.Debug(msg)
+	log.WithFields(log.Fields{"host": msg.ReceivedFrom.GetAddress(), "port": msg.ReceivedFrom.GetPort(), "mesasge": msg}).Debug("Received a message")
 	if msg.IsRequest() {
 		if p.isMyMessage(msg) {
 			log.Info("it is my request")
@@ -203,13 +229,11 @@ func (p *Proxy) HandleMessage(msg *Message) {
 			}
 		}
 	} else {
-		log.Info("received a response")
 		msg.PopVia()
 		host, port, transport, err := p.getNextReponseHop(msg)
 		if err != nil {
 			log.WithFields(log.Fields{"message": msg}).Error("Fail to find the next hop for response")
 		} else {
-			log.Info("Send response")
 			p.sendMessage(host, port, transport, msg)
 		}
 	}
@@ -363,7 +387,18 @@ func (p *Proxy) getNextReponseHop(msg *Message) (host string, port int, transpor
 }
 
 func (p *Proxy) findClientTransport(host string, port int, transport string) (ClientTransport, error) {
-	return p.clientTransMgr.GetTransport(transport, host, port)
+	trans, err := p.clientTransMgr.GetTransport(transport, host, port)
+	if err == nil && trans.primary == nil {
+		serverTrans, ok := p.selfLearnRoute.GetRoute(host)
+		if ok {
+			udpServerTrans, ok := serverTrans.(*UDPServerTransport)
+			remoteAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+			if err == nil && ok {
+				trans.primary = NewUDPClientTransportWithConn(udpServerTrans.conn, remoteAddr)
+			}
+		}
+	}
+	return trans, err
 }
 
 func (p *Proxy) sendMessage(host string, port int, transport string, msg *Message) {
@@ -373,7 +408,6 @@ func (p *Proxy) sendMessage(host string, port int, transport string, msg *Messag
 	}
 	t, err := p.findClientTransport(ip, port, transport)
 	if err == nil {
-		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg}).Debug("Suceed to send")
 		t.Send(msg)
 	} else {
 		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg}).Error("Fail to find the transport by ", transport)
@@ -388,17 +422,18 @@ func NewProxyItem(address string,
 	dests []string,
 	receivedSupport bool,
 	defRoute bool,
+	connAcceptedListener ConnectionAcceptedListener,
 	selfLearnRoute *SelfLearnRoute) (*ProxyItem, error) {
 	transports := make([]ServerTransport, 0)
 	if udpPort > 0 {
-		transports = append(transports, NewUDPServerTransport(address, udpPort, receivedSupport, selfLearnRoute))
+		udpServerTrans, err := NewUDPServerTransport(address, udpPort, receivedSupport, selfLearnRoute)
+		if err == nil {
+			transports = append(transports, udpServerTrans)
+		}
 	} else if tcpPort > 0 {
-		transports = append(transports, NewTCPServerTransport(address, tcpPort, receivedSupport, selfLearnRoute))
+		transports = append(transports, NewTCPServerTransport(address, tcpPort, receivedSupport, connAcceptedListener, selfLearnRoute))
 	}
-	backend, err := CreateRoundRobinBackend(net.JoinHostPort(address, "0"), backends)
-	if err != nil {
-		return nil, err
-	}
+	backend, _ := CreateRoundRobinBackend(net.JoinHostPort(address, "0"), backends)
 	proxyItem := &ProxyItem{transports: transports,
 		backend:  backend,
 		dests:    dests,

@@ -83,7 +83,7 @@ func init() {
 
 func CreateRoundRobinBackend(localhostport string, addresses []string) (*RoundRobinBackend, error) {
 	if len(addresses) <= 0 {
-		return nil, nil
+		return nil, fmt.Errorf("No address")
 	}
 	rrBackend := NewRoundRobinBackend()
 	for _, address := range addresses {

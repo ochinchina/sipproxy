@@ -128,6 +128,7 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 			listen.Dests,
 			listen.defRoute,
 			!listen.NoReceived,
+			proxy,
 			selfLearnRoute)
 		if err != nil {
 			log.Error("Fail to start proxy with error:", err)

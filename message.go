@@ -521,7 +521,7 @@ func (m *Message) Write(writer io.Writer) (int, error) {
 }
 
 func (m *Message) Bytes() ([]byte, error) {
-	buf := bytes.NewBuffer(make([]byte, 256))
+	buf := bytes.NewBuffer(make([]byte, 0))
 	_, err := m.Write(buf)
 	if err != nil {
 		return nil, err
