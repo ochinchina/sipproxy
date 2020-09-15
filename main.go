@@ -7,6 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 )
 
@@ -44,14 +45,20 @@ type ProxiesConfigure struct {
 
 func init() {
 	log.SetOutput(os.Stdout)
+	disableColors := (runtime.GOOS == "windows")
 
-	if runtime.GOOS == "windows" {
-		log.SetFormatter(&log.TextFormatter{DisableColors: true, FullTimestamp: true})
-	} else {
-		log.SetFormatter(&log.TextFormatter{DisableColors: false, FullTimestamp: true})
-	}
+	log.SetFormatter(&log.TextFormatter{DisableColors: disableColors,
+		FullTimestamp: true,
+		ForceQuote:    false,
+		DisableQuote:  isQuoteDisabled()})
 
 	log.SetLevel(log.DebugLevel)
+}
+
+func isQuoteDisabled() bool {
+	disableQuoteEnv := os.Getenv("DISABLE_QUOTE")
+
+	return strings.EqualFold("true", disableQuoteEnv) || len(disableQuoteEnv) == 0
 }
 
 func initLog(logFile string, strLevel string, logSize int, backups int) {
@@ -63,7 +70,10 @@ func initLog(logFile string, strLevel string, logSize int, backups int) {
 	if len(logFile) <= 0 {
 		log.SetOutput(os.Stdout)
 	} else {
-		log.SetFormatter(&log.TextFormatter{DisableColors: true, FullTimestamp: true})
+		log.SetFormatter(&log.TextFormatter{DisableColors: true,
+			FullTimestamp: true,
+			ForceQuote:    false,
+			DisableQuote:  isQuoteDisabled()})
 		log.SetOutput(&lumberjack.Logger{Filename: logFile,
 			LocalTime:  true,
 			MaxSize:    logSize,

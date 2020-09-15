@@ -281,7 +281,7 @@ func (p *Proxy) sendToBackend(msg *Message) {
 	} else {
 		method, err := msg.GetMethod()
 		// try to send message with dialog id
-		if err != nil && method != "INVITE" {
+		if err == nil && method != "INVITE" {
 			dialog, err := msg.GetDialog()
 			if err == nil && dialog != "" {
 				backend, err := p.dialogBasedBackends.GetBackend(dialog)
