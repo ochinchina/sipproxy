@@ -70,7 +70,6 @@ func (p *Proxy) Start() error {
 	return nil
 }
 
-// HandleMessage implement the MessageHandler.HandleMessage() method
 func (p *Proxy) HandleRawMessage(msg *RawMessage) {
 	p.msgChannel <- msg
 }
@@ -177,6 +176,29 @@ func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 	// reached).
 	msg.TryRemoveTopRoute(rawMessage.From.GetAddress(), rawMessage.From.GetPort())
 	return msg, nil
+}
+
+func (p *Proxy) getBackendOfResponse(addr string, msg *Message) (Backend, error) {
+	backend, ok := p.backends[addr]
+	if ok {
+		return backend, nil
+	}
+
+	log.WithFields(log.Fields{"backendAddr": addr}).Warn("Fail to find backend by address")
+
+	transId, err := msg.GetClientTransaction()
+	if err != nil {
+		return nil, err
+	}
+	backend, err = p.dialogBasedBackends.GetBackend(transId)
+	if err != nil {
+		log.WithFields(log.Fields{"clientTransaction": transId}).Warn("Fail to find backend by transaction")
+	}
+
+	if msg.IsFinalResponse() {
+		p.dialogBasedBackends.RemoveDialog(transId)
+	}
+	return backend, err
 
 }
 
@@ -184,10 +206,10 @@ func (p *Proxy) handleDialog(peerAddr string, peerPort int, msg *Message) {
 	if !msg.IsResponse() {
 		return
 	}
+
 	addr := net.JoinHostPort(peerAddr, strconv.Itoa(peerPort))
-	backend, ok := p.backends[addr]
-	if !ok {
-		log.WithFields(log.Fields{"backendAddr": addr}).Warn("Fail to find backend by address")
+	backend, err := p.getBackendOfResponse(addr, msg)
+	if err != nil {
 		return
 	}
 	if method, err := msg.GetMethod(); err == nil {
@@ -249,17 +271,18 @@ func (p *Proxy) HandleBackendRemoved(backend Backend) {
 	p.backendChangeChannel <- &BackendChangeEvent{action: "remove", backend: backend}
 }
 
-func (p *Proxy) addVia(msg *Message, transport ServerTransport) {
+func (p *Proxy) addVia(msg *Message, transport ServerTransport) (*Via, error) {
 	viaParam := CreateViaParam(transport.GetProtocol(), transport.GetAddress(), transport.GetPort())
 	branch, err := CreateBranch()
 	if err != nil {
 		log.Error("Fail to create branch parameter")
-		return
+		return nil, err
 	}
 	viaParam.SetBranch(branch)
 	via := NewVia()
 	via.AddViaParam(viaParam)
 	msg.AddVia(via)
+	return via, nil
 }
 
 func (p *Proxy) addRecordRoute(msg *Message, transport ServerTransport) {
@@ -298,6 +321,10 @@ func (p *Proxy) sendToBackend(msg *Message) {
 		transport := backendItem.transports[0]
 		p.addVia(msg, transport)
 		p.addRecordRoute(msg, transport)
+		transId, err := msg.GetClientTransaction()
+		if err == nil {
+			p.dialogBasedBackends.AddBackend(transId, backendItem.backend)
+		}
 		err = backendItem.backend.Send(msg)
 		if err != nil {
 			log.WithFields(log.Fields{"error": err}).Error("Fail to send message to backend")

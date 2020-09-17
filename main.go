@@ -56,9 +56,9 @@ func init() {
 }
 
 func isQuoteDisabled() bool {
-	disableQuoteEnv := os.Getenv("DISABLE_QUOTE")
+	disableQuoteEnv := strings.ToLower(os.Getenv("DISABLE_QUOTE"))
 
-	return strings.EqualFold("true", disableQuoteEnv) || len(disableQuoteEnv) == 0
+	return disableQuoteEnv == "true" || disableQuoteEnv == "t" || disableQuoteEnv == "yes" || disableQuoteEnv == "y"
 }
 
 func initLog(logFile string, strLevel string, logSize int, backups int) {

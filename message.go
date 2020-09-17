@@ -595,7 +595,7 @@ func (m *Message) IsFinalResponse() bool {
 		return false
 	}
 
-	value, ok := finalResponseStatusCodes[m.response.statusCode]
+	value, ok := finalResponseStatusCodes[m.response.statusCode/100]
 	return ok && value
 }
 
@@ -694,4 +694,89 @@ func (m *Message) GetDialog() (string, error) {
 			fmt.Sprintf("%s-%s", from_tag, from_addr_s)).String(), nil
 
 	}
+}
+
+func (m *Message) GetTopViaBranch() (string, error) {
+	// Get the Branch
+	via, err := m.GetVia()
+
+	if err != nil {
+		return "", err
+	}
+	if via.Size() <= 0 {
+		return "", fmt.Errorf("No Via header is available")
+	}
+
+	param, err := via.GetParam(0)
+
+	if err != nil {
+		return "", err
+	}
+
+	return param.GetBranch()
+}
+
+func (m *Message) GetTopViaSentBy() (string, error) {
+	// Get the Branch
+	via, err := m.GetVia()
+
+	if err != nil {
+		return "", err
+	}
+	if via.Size() <= 0 {
+		return "", fmt.Errorf("No Via header is available")
+	}
+
+	param, err := via.GetParam(0)
+
+	if err != nil {
+		return "", err
+	}
+
+	return param.GetSentBy(), nil
+}
+
+// GetClientTransaction get the client transaction from message
+func (m *Message) GetClientTransaction() (string, error) {
+	cseq, err := m.GetCSeq()
+	if err != nil {
+		return "", err
+	}
+
+	// Get the TopVia Branch
+	branch, err := m.GetTopViaBranch()
+
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%s-%s", cseq.Method, branch), nil
+
+}
+
+func (m *Message) GetServerTransaction() (string, error) {
+	if m.IsResponse() {
+		return "", fmt.Errorf("No server transaction for response")
+	}
+	// the method of the request matches the one that created the
+	// transaction, except for ACK, where the method of the request
+	// that created the transaction is INVITE.
+	if m.request.method == "ACK" {
+		return "", errors.New("No server transaction for ACK")
+	}
+
+	// Get the top Via Branch
+	branch, err := m.GetTopViaBranch()
+
+	if err != nil {
+		return "", err
+	}
+
+	//Get the top Via Sent-By
+	sentBy, err := m.GetTopViaSentBy()
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%s-%s-%s", m.request.method, sentBy, branch), nil
 }
