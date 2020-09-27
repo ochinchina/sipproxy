@@ -703,9 +703,6 @@ func (m *Message) GetTopViaBranch() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if via.Size() <= 0 {
-		return "", fmt.Errorf("No Via header is available")
-	}
 
 	param, err := via.GetParam(0)
 

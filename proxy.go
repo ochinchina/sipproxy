@@ -253,6 +253,16 @@ func (p *Proxy) HandleMessage(msg *Message) {
 	} else {
 		msg.PopVia()
 		host, port, transport, err := p.getNextReponseHop(msg)
+		// if the response of SUBSCRIBE to the backend
+		if method, err := msg.GetMethod(); err == nil && method == "SUBSCRIBE" {
+			addr := fmt.Sprintf("%s:%d", host, port)
+			if backend, ok := p.backends[addr]; ok {
+				if dialog, err := msg.GetDialog(); err == nil {
+					log.WithFields(log.Fields{"dialog": dialog, "backend": backend.GetAddress()}).Info("bind the dialog to the response")
+					p.dialogBasedBackends.AddBackend(dialog, backend)
+				}
+			}
+		}
 		if err != nil {
 			log.WithFields(log.Fields{"message": msg}).Error("Fail to find the next hop for response")
 		} else {
@@ -308,6 +318,14 @@ func (p *Proxy) sendToBackend(msg *Message) {
 			dialog, err := msg.GetDialog()
 			if err == nil && dialog != "" {
 				backend, err := p.dialogBasedBackends.GetBackend(dialog)
+				if method == "NOTIFY" {
+					if v, err := msg.GetHeaderValue("Subscription-State"); err == nil {
+						if s, ok := v.(string); ok && s == "terminated" {
+							log.WithFields(log.Fields{"dialog": dialog}).Info("remove the dialog")
+							p.dialogBasedBackends.RemoveDialog(dialog)
+						}
+					}
+				}
 				if err != nil {
 					log.WithFields(log.Fields{"dialog": dialog, "error": err}).Warn("Fail to find backend for dialog")
 				} else if backend.Send(msg) == nil {
@@ -321,13 +339,13 @@ func (p *Proxy) sendToBackend(msg *Message) {
 		transport := backendItem.transports[0]
 		p.addVia(msg, transport)
 		p.addRecordRoute(msg, transport)
-		transId, err := msg.GetClientTransaction()
-		if err == nil {
-			p.dialogBasedBackends.AddBackend(transId, backendItem.backend)
-		}
 		err = backendItem.backend.Send(msg)
-		if err != nil {
-			log.WithFields(log.Fields{"error": err}).Error("Fail to send message to backend")
+		if err == nil {
+			transId, err := msg.GetClientTransaction()
+			if err == nil {
+				log.WithFields(log.Fields{"trandId": transId, "backend": backendItem.backend}).Debug("bind client transaction with backend")
+				p.dialogBasedBackends.AddBackend(transId, backendItem.backend)
+			}
 		}
 	}
 }
