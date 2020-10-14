@@ -251,7 +251,7 @@ func (t *TCPClientTransport) Send(msg *Message) error {
 		}
 	}
 	log.WithFields(log.Fields{"addr": t.addr}).Error("Fail to send message to tcp server")
-	return fmt.Errorf("Fail to send message to ", t.addr)
+	return fmt.Errorf("Fail to send message to %s", t.addr)
 }
 
 func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) (*UDPServerTransport, error) {

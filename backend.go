@@ -200,7 +200,7 @@ func (t *TCPBackend) Send(msg *Message) error {
 		t.conn.Close()
 		t.conn = nil
 	}
-	return fmt.Errorf("Fail to send message to backend ", t.backendAddr)
+	return fmt.Errorf("Fail to send message to backend %s", t.backendAddr)
 }
 
 func (t *TCPBackend) GetAddress() string {
