@@ -12,8 +12,8 @@ import (
 )
 
 type BackendChangeListener interface {
-	HandleBackendAdded(backend Backend)
-	HandleBackendRemoved(backend Backend)
+	HandleBackendAdded(backend Backend, parent *RoundRobinBackend)
+	HandleBackendRemoved(backend Backend, parent *RoundRobinBackend)
 }
 
 type BackendChangeListenerMgr struct {
@@ -32,21 +32,21 @@ func (bm *BackendChangeListenerMgr) AddChangeListener(listener BackendChangeList
 	bm.listeners = append(bm.listeners, listener)
 }
 
-func (bm *BackendChangeListenerMgr) HandleBackendAdded(backend Backend) {
+func (bm *BackendChangeListenerMgr) HandleBackendAdded(backend Backend, parent *RoundRobinBackend) {
 	bm.Lock()
 	defer bm.Unlock()
 
 	for _, listener := range bm.listeners {
-		listener.HandleBackendAdded(backend)
+		listener.HandleBackendAdded(backend, parent)
 	}
 }
 
-func (bm *BackendChangeListenerMgr) HandleBackendRemoved(backend Backend) {
+func (bm *BackendChangeListenerMgr) HandleBackendRemoved(backend Backend, parent *RoundRobinBackend) {
 	bm.Lock()
 	defer bm.Unlock()
 
 	for _, listener := range bm.listeners {
-		listener.HandleBackendRemoved(backend)
+		listener.HandleBackendRemoved(backend, parent)
 	}
 }
 
@@ -226,7 +226,7 @@ func (rb *RoundRobinBackend) AddBackend(backend Backend) {
 	defer rb.Unlock()
 	rb.backends = append(rb.backends, backend)
 	rb.backendMap[backend.GetAddress()] = backend
-	rb.backendChangeListenerMgr.HandleBackendAdded(backend)
+	rb.backendChangeListenerMgr.HandleBackendAdded(backend, rb)
 }
 
 func (rb *RoundRobinBackend) GetBackend(address string) (Backend, error) {
@@ -253,7 +253,7 @@ func (rb *RoundRobinBackend) RemoveBackend(address string) {
 			}
 		}
 		delete(rb.backendMap, address)
-		rb.backendChangeListenerMgr.HandleBackendRemoved(backend)
+		rb.backendChangeListenerMgr.HandleBackendRemoved(backend, rb)
 	}
 }
 
@@ -323,7 +323,7 @@ func (rb *RoundRobinBackend) AddBackendChangeListener(listener BackendChangeList
 	rb.Lock()
 	defer rb.Unlock()
 	for _, backend := range rb.backendMap {
-		listener.HandleBackendAdded(backend)
+		listener.HandleBackendAdded(backend, rb)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 type BackendChangeEvent struct {
 	action  string
 	backend Backend
+	parent  *RoundRobinBackend
 }
 
 type ProxyItem struct {
@@ -18,6 +19,11 @@ type ProxyItem struct {
 	backend    *RoundRobinBackend
 	dests      []string
 	defRoute   bool
+}
+
+type BackendWithParent struct {
+	backend Backend
+	parent  *RoundRobinBackend
 }
 
 type Proxy struct {
@@ -30,7 +36,7 @@ type Proxy struct {
 	msgChannel           chan *RawMessage
 	backendChangeChannel chan *BackendChangeEvent
 	connAcceptedChannel  chan net.Conn
-	backends             map[string]Backend
+	backends             map[string]*BackendWithParent
 	dialogBasedBackends  *DialogBasedBackend
 }
 
@@ -47,7 +53,7 @@ func NewProxy(name string,
 		msgChannel:           make(chan *RawMessage, 10000),
 		backendChangeChannel: make(chan *BackendChangeEvent, 1000),
 		connAcceptedChannel:  make(chan net.Conn),
-		backends:             make(map[string]Backend),
+		backends:             make(map[string]*BackendWithParent),
 		dialogBasedBackends:  NewDialogBasedBackend(600)}
 	go proxy.receiveAndProcessMessage()
 	return proxy
@@ -97,7 +103,7 @@ func (p *Proxy) receiveAndProcessMessage() {
 			backend := backendChangeEvent.backend
 			switch backendChangeEvent.action {
 			case "add":
-				p.backends[backend.GetAddress()] = backend
+				p.backends[backend.GetAddress()] = &BackendWithParent{backend: backend, parent: backendChangeEvent.parent}
 			case "remove":
 				delete(p.backends, backend.GetAddress())
 			}
@@ -179,9 +185,9 @@ func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 }
 
 func (p *Proxy) getBackendOfResponse(addr string, msg *Message) (Backend, error) {
-	backend, ok := p.backends[addr]
+	backendWithParent, ok := p.backends[addr]
 	if ok {
-		return backend, nil
+		return backendWithParent.backend, nil
 	}
 
 	log.WithFields(log.Fields{"backendAddr": addr}).Warn("Fail to find backend by address")
@@ -190,7 +196,7 @@ func (p *Proxy) getBackendOfResponse(addr string, msg *Message) (Backend, error)
 	if err != nil {
 		return nil, err
 	}
-	backend, err = p.dialogBasedBackends.GetBackend(transId)
+	backend, err := p.dialogBasedBackends.GetBackend(transId)
 	if err != nil {
 		log.WithFields(log.Fields{"clientTransaction": transId}).Warn("Fail to find backend by transaction")
 	}
@@ -256,10 +262,10 @@ func (p *Proxy) HandleMessage(msg *Message) {
 		// if the response of SUBSCRIBE to the backend
 		if method, err := msg.GetMethod(); err == nil && method == "SUBSCRIBE" {
 			addr := fmt.Sprintf("%s:%d", host, port)
-			if backend, ok := p.backends[addr]; ok {
+			if backendWithParent, ok := p.backends[addr]; ok {
 				if dialog, err := msg.GetDialog(); err == nil {
-					log.WithFields(log.Fields{"dialog": dialog, "backend": backend.GetAddress()}).Info("bind the dialog to the response")
-					p.dialogBasedBackends.AddBackend(dialog, backend)
+					log.WithFields(log.Fields{"dialog": dialog, "backend": backendWithParent.backend.GetAddress()}).Info("bind the dialog to the response")
+					p.dialogBasedBackends.AddBackend(dialog, backendWithParent.backend)
 				}
 			}
 		}
@@ -272,13 +278,13 @@ func (p *Proxy) HandleMessage(msg *Message) {
 }
 
 // HandleBackendAdded implements the method in BackendChangeListener
-func (p *Proxy) HandleBackendAdded(backend Backend) {
-	p.backendChangeChannel <- &BackendChangeEvent{action: "add", backend: backend}
+func (p *Proxy) HandleBackendAdded(backend Backend, parent *RoundRobinBackend) {
+	p.backendChangeChannel <- &BackendChangeEvent{action: "add", backend: backend, parent: parent}
 }
 
 // HandleBackendRemoved implements the method in BackendChangeListener
-func (p *Proxy) HandleBackendRemoved(backend Backend) {
-	p.backendChangeChannel <- &BackendChangeEvent{action: "remove", backend: backend}
+func (p *Proxy) HandleBackendRemoved(backend Backend, parent *RoundRobinBackend) {
+	p.backendChangeChannel <- &BackendChangeEvent{action: "remove", backend: backend, parent: parent}
 }
 
 func (p *Proxy) addVia(msg *Message, transport ServerTransport) (*Via, error) {
@@ -312,42 +318,84 @@ func (p *Proxy) sendToBackend(msg *Message) {
 	if backendItem == nil {
 		log.Error("Fail to find the backend for my message\n", msg)
 	} else {
-		method, err := msg.GetMethod()
-		// try to send message with dialog id
-		if err == nil && method != "INVITE" {
-			dialog, err := msg.GetDialog()
-			if err == nil && dialog != "" {
-				backend, err := p.dialogBasedBackends.GetBackend(dialog)
-				if method == "NOTIFY" {
-					if v, err := msg.GetHeaderValue("Subscription-State"); err == nil {
-						if s, ok := v.(string); ok && s == "terminated" {
-							log.WithFields(log.Fields{"dialog": dialog}).Info("remove the dialog")
-							p.dialogBasedBackends.RemoveDialog(dialog)
-						}
-					}
-				}
-				if err != nil {
-					log.WithFields(log.Fields{"dialog": dialog, "error": err}).Warn("Fail to find backend for dialog")
-				} else if backend.Send(msg) == nil {
-					log.WithFields(log.Fields{"backendAddr": backend.GetAddress(), "dialog": dialog}).Info("send dialog to backend")
-					return
-				} else {
-					log.WithFields(log.Fields{"backendAddr": backend.GetAddress(), "dialog": dialog}).Error("Fail to send dialog message to backend")
-				}
-			}
+		backend, transport, err := p.findBackendByDialog(msg)
+		if err != nil {
+			backend = backendItem.backend
+			transport = backendItem.transports[0]
 		}
-		transport := backendItem.transports[0]
+		if transport == nil {
+			transport = backendItem.transports[0]
+		}
 		p.addVia(msg, transport)
 		p.addRecordRoute(msg, transport)
-		err = backendItem.backend.Send(msg)
+		err = backend.Send(msg)
 		if err == nil {
 			transId, err := msg.GetClientTransaction()
 			if err == nil {
-				log.WithFields(log.Fields{"trandId": transId, "backend": backendItem.backend}).Debug("bind client transaction with backend")
-				p.dialogBasedBackends.AddBackend(transId, backendItem.backend)
+				log.WithFields(log.Fields{"trandId": transId, "backend": backend}).Debug("bind client transaction with backend")
+				p.dialogBasedBackends.AddBackend(transId, backend)
 			}
 		}
 	}
+}
+
+// findBackendByDialog find the backend information by the message dialog
+func (p *Proxy) findBackendByDialog(msg *Message) (Backend, ServerTransport, error) {
+	method, err := msg.GetMethod()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// no dialog for INVITE and SUBSCRIBE message because they initialize the dialog
+	if method == "INVITE" || method == "SUBSCRIBE" {
+		return nil, nil, fmt.Errorf("no dialog for request %s", method)
+	}
+	dialog, err := msg.GetDialog()
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	backend, err := p.dialogBasedBackends.GetBackend(dialog)
+	var transport ServerTransport = nil
+	if err == nil {
+		log.WithFields(log.Fields{"backendAddr": backend.GetAddress(), "dialog": dialog}).Info("find backend by dialog")
+		transport, _ = p.findTransportByBackendAddr(backend.GetAddress())
+	} else {
+		log.WithFields(log.Fields{"dialog": dialog, "error": err}).Warn("Fail to find backend by dialog")
+	}
+	// remove the SUBSCRIBE initialized dialog if the Subscription-State is terminated in NOTIFY message
+	if method == "NOTIFY" {
+		if v, err := msg.GetHeaderValue("Subscription-State"); err == nil {
+			if s, ok := v.(string); ok && s == "terminated" {
+				log.WithFields(log.Fields{"dialog": dialog}).Info("remove the dialog")
+				p.dialogBasedBackends.RemoveDialog(dialog)
+			}
+		}
+	}
+	return backend, transport, err
+}
+
+func (p *Proxy) findTransportByBackendAddr(addr string) (ServerTransport, error) {
+	if backendWithParent, ok := p.backends[addr]; ok {
+		proxyItem := p.findProxyItemByRoundrobinBackend(backendWithParent.parent)
+		if proxyItem == nil {
+			log.WithFields(log.Fields{"backendAddr": addr}).Warn("Fail to find backend by address")
+		} else {
+			return proxyItem.transports[0], nil
+		}
+	}
+	return nil, fmt.Errorf("Fail to find backend by %s", addr)
+
+}
+
+func (p *Proxy) findProxyItemByRoundrobinBackend(rrBackend *RoundRobinBackend) *ProxyItem {
+	for _, item := range p.items {
+		if item.backend == rrBackend {
+			return item
+		}
+	}
+	return nil
 }
 
 func (p *Proxy) findBackendProxyItem() *ProxyItem {
