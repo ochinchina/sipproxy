@@ -47,7 +47,7 @@ archive:
 release:
   github:
     owner: ochinchina
-    name: supervisord
+    name: sipproxy
   draft: true
   prerelease: true
   name_template: "{{.ProjectName}}-v{{.Version}}-{{.ShortCommit}}"
