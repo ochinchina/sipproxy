@@ -120,19 +120,23 @@ type TCPClientTransport struct {
 
 var SupportedProtocol = map[string]string{"udp": "udp", "tcp": "tcp"}
 
-func NewUDPClientTransport(host string, port int) *UDPClientTransport {
+// NewUDPClientTransport create a UDP client transport with host and port
+func NewUDPClientTransport(host string, port int) (*UDPClientTransport, error) {
 	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", host, port))
 	if err != nil {
 		log.WithFields(log.Fields{"host": host, "port": port, "error": err}).Error("Fail to resolve udp host address")
-		return nil
+		return nil, err
 	}
 	laddr, _ := net.ResolveUDPAddr("udp", ":0")
-	return &UDPClientTransport{conn: nil, localAddr: laddr, remoteAddr: raddr}
+	return &UDPClientTransport{conn: nil, localAddr: laddr, remoteAddr: raddr}, nil
 }
 
-func NewUDPClientTransportWithConn(conn *net.UDPConn, remoteAddr *net.UDPAddr) *UDPClientTransport {
-	localAddr, _ := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
-	return &UDPClientTransport{conn: conn, localAddr: localAddr, remoteAddr: remoteAddr}
+func NewUDPClientTransportWithConn(conn *net.UDPConn, remoteAddr *net.UDPAddr) (*UDPClientTransport, error) {
+	localAddr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
+	if err != nil {
+		return nil, err
+	}
+	return &UDPClientTransport{conn: conn, localAddr: localAddr, remoteAddr: remoteAddr}, err
 }
 
 func (u *UDPClientTransport) connect() error {
@@ -171,10 +175,12 @@ type ClientTransportMgr struct {
 	transports map[string]*FailOverClientTransport
 }
 
+// NewClientTransportMgr create a client transport manager object
 func NewClientTransportMgr() *ClientTransportMgr {
 	return &ClientTransportMgr{transports: make(map[string]*FailOverClientTransport)}
 }
 
+// GetTransport Get the client ransport by the protocl, host and port
 func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int) (*FailOverClientTransport, error) {
 	c.Lock()
 	defer c.Unlock()
@@ -196,23 +202,30 @@ func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int
 }
 
 func (c *ClientTransportMgr) createClientTransport(protocol string, host string, port int) (*FailOverClientTransport, error) {
-	trans := NewFailOverClientTransport()
+	var client ClientTransport = nil
+	var err error = nil
 	if protocol == "udp" {
-		trans.secondary = NewUDPClientTransport(host, port)
-		return trans, nil
+		client, err = NewUDPClientTransport(host, port)
 	} else if protocol == "tcp" {
-		trans.secondary = NewTCPClientTransport(host, port)
-		return trans, nil
+		client, err = NewTCPClientTransport(host, port)
+	} else {
+		return nil, fmt.Errorf("not support %s", protocol)
 	}
-	return nil, fmt.Errorf("not support %s", protocol)
+	if err != nil {
+		return nil, err
+	}
+	trans := NewFailOverClientTransport()
+	trans.secondary = client
+	return trans, nil
 
 }
 
-func NewTCPClientTransport(host string, port int) *TCPClientTransport {
+// NewTCPClientTransport create a TCP client transport with the specified host and port
+func NewTCPClientTransport(host string, port int) (*TCPClientTransport, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	return &TCPClientTransport{addr: addr,
 		reconnectable: true,
-		conn:          nil}
+		conn:          nil}, nil
 }
 
 func NewTCPClientTransportWithConn(conn net.Conn) (*TCPClientTransport, error) {

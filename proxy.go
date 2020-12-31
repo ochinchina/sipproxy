@@ -487,7 +487,7 @@ func (p *Proxy) findClientTransport(host string, port int, transport string) (Cl
 			udpServerTrans, ok := serverTrans.(*UDPServerTransport)
 			remoteAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 			if err == nil && ok {
-				trans.primary = NewUDPClientTransportWithConn(udpServerTrans.conn, remoteAddr)
+				trans.primary, _ = NewUDPClientTransportWithConn(udpServerTrans.conn, remoteAddr)
 			}
 		}
 	}

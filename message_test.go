@@ -1,15 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"fmt"
 	"testing"
 	"time"
 )
 
-func create_reader_from_string( s string) *bufio.Reader {
-	return bufio.NewReader( bytes.NewBufferString(s) )
+func create_reader_from_string(s string) *bufio.Reader {
+	return bufio.NewReader(bytes.NewBufferString(s))
 }
 
 func TestParseInviteMessage(t *testing.T) {
@@ -25,7 +25,7 @@ Content-Type: application/sdp
 Content-Length: 22
 
 this is a test message`
-	msg, err := ParseMessage( create_reader_from_string(s) )
+	msg, err := ParseMessage(create_reader_from_string(s))
 	if err != nil {
 		t.Fail()
 	}
@@ -49,7 +49,7 @@ Content-Length: 0
 
 CK
 Accept-Contact: *;+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel\"\nRecord-Route: <sip:mavodi-0-177-1c7-1-1150000-@10.166.226.86:5060;lr>,<sip:mavodi-0-1a2-3fffffff-1-ffffffff-@10.166.226.87:5066;mavsipodi-0-1a9-35-1-1e36;lr>\nP-Charging-Vector: icid-value=sgc3.daatf005.sip.t-mobile.com-1485-460188-67377;icid-generated-at=sgc3.daatf005.sip.t-mobile.com\nP-Asserted-Identity: <sip:557399123456@msg.pc.t-mobile.com>\nP-Access-Network-Info: 3GPP-E-UTRAN-FDD; utran-cell-id-3gpp=3114802c340001815\nUser-Agent: T-Mobile VoLTE-RCS-ussd SEC/N920TUVU4D 6.0.1 Mavenir UAG/v4.5 EATF/v4.5-14042501o\nPriority: emergency\nContent-Type: application/sdp\nContent-Length: 4\n\ntest\n`
-	msg, err := ParseMessage( create_reader_from_string(s))
+	msg, err := ParseMessage(create_reader_from_string(s))
 	if err != nil {
 		t.Fail()
 	}
@@ -155,7 +155,7 @@ test`
 	}
 }
 
-func TestParseMessagePerf( t *testing.T ) {
+func TestParseMessagePerf(t *testing.T) {
 	s := `NOTIFY sip:557399123456@10.68.103.193:5060 SIP/2.0
 Route: <sip:ecf01.sip.t-mobile.com;lr;transport=udp>
 Max-Forwards: 70
@@ -176,8 +176,8 @@ test`
 
 	start := time.Now()
 	for i := 0; i < 1000000; i++ {
-		ParseMessage( create_reader_from_string(s) )
+		ParseMessage(create_reader_from_string(s))
 	}
 	end := time.Now()
-	fmt.Printf( "Total time:%d\n", end.Sub( start ).Milliseconds() )
+	fmt.Printf("Total time:%d\n", end.Sub(start).Milliseconds())
 }
