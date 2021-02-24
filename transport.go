@@ -313,8 +313,8 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 }
 
 func (u *UDPServerTransport) receiveMessage() {
+	buf := make([]byte, 1024*64)
 	for {
-		buf := make([]byte, 1024*64)
 		n, peerAddr, err := u.conn.ReadFromUDP(buf)
 		if err != nil {
 			log.WithFields(log.Fields{"localAddr": u.localAddr, "error": err}).Error("Fail to read data")
