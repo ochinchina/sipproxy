@@ -27,12 +27,7 @@ func ParseCSeq(s string) (*CSeq, error) {
 }
 
 func (cs *CSeq) Write(writer io.Writer) (int, error) {
-	n, _ := fmt.Fprintf(writer, "%d", cs.Seq)
-	t, err := fmt.Fprintf(writer, "%s", cs.Method)
-	if err != nil {
-		return 0, err
-	}
-	return n + t, nil
+	return fmt.Fprintf(writer, "%d %s", cs.Seq, cs.Method)
 }
 
 func (cs *CSeq) String() string {
