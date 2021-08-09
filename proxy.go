@@ -290,22 +290,24 @@ func (p *Proxy) handleDialog(peerAddr string, peerPort int, msg *Message) {
 func (p *Proxy) HandleMessage(msg *Message) {
 	log.WithFields(log.Fields{"host": msg.ReceivedFrom.GetAddress(), "port": msg.ReceivedFrom.GetPort(), "mesasge": msg}).Debug("Received a message")
 	if msg.IsRequest() {
-		if p.myName.isMyMessage(msg) {
+		host, port, transport, err := p.getNextRequestHop( msg )
+		if err == nil {
+			log.Info("Get next hop, host=", host, ",port=", port, ",transport=", transport)
+                        serverTrans, ok := p.selfLearnRoute.GetRoute(host)
+                        if ok {
+                                p.addVia(msg, serverTrans)
+                                p.addRecordRoute(msg, serverTrans)
+                        }
+                        if err != nil {
+                                log.Error("Fail to find the next hop for request:", msg)
+                        } else {
+                                p.sendMessage(host, port, transport, msg)
+                        }
+		} else if p.myName.isMyMessage(msg) { 
 			log.Info("it is my request")
 			p.sendToBackend(msg)
 		} else {
-			host, port, transport, err := p.getNextRequestHop(msg)
-			log.Info("Not my request, get next hop, host=", host, ",port=", port, ",transport=", transport)
-			serverTrans, ok := p.selfLearnRoute.GetRoute(host)
-			if ok {
-				p.addVia(msg, serverTrans)
-				p.addRecordRoute(msg, serverTrans)
-			}
-			if err != nil {
-				log.Error("Fail to find the next hop for request:", msg)
-			} else {
-				p.sendMessage(host, port, transport, msg)
-			}
+			log.Error("Not my message, fail to route the message")
 		}
 	} else {
 		msg.PopVia()
