@@ -5,6 +5,7 @@ import (
 	"github.com/urfave/cli/v2"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"gopkg.in/yaml.v3"
+	"io"
 	"os"
 	"runtime"
 	"strings"
@@ -81,6 +82,20 @@ func initLog(logFile string, strLevel string, logSize int, backups int) {
 	}
 }
 
+func loadConfigFromReader( reader io.Reader )(*ProxiesConfigure, error) {
+	r := &ProxiesConfigure{}
+
+        decoder := yaml.NewDecoder(reader)
+        err := decoder.Decode(r)
+
+        if err != nil {
+                return nil, err
+        }
+
+        return r, nil
+
+}
+
 func loadConfig(fileName string) (*ProxiesConfigure, error) {
 	f, err := os.Open(fileName)
 	if err != nil {
@@ -88,16 +103,7 @@ func loadConfig(fileName string) (*ProxiesConfigure, error) {
 	}
 
 	defer f.Close()
-	r := &ProxiesConfigure{}
-
-	decoder := yaml.NewDecoder(f)
-	err = decoder.Decode(r)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return r, nil
+	return loadConfigFromReader( f )
 
 }
 

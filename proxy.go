@@ -4,6 +4,7 @@ import (
 	"fmt"
 	log "github.com/sirupsen/logrus"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -26,8 +27,95 @@ type BackendWithParent struct {
 	parent  *RoundRobinBackend
 }
 
+type MyName struct {
+	names    []string
+	patterns []*regexp.Regexp
+}
+
+func NewMyName(name string) *MyName {
+	tmp := strings.Split(name, ",")
+	myName := &MyName{names: make([]string, 0), patterns: make([]*regexp.Regexp, 0)}
+
+	for _, t := range tmp {
+		s := strings.TrimSpace(t)
+		myName.names = append(myName.names, s)
+		p, err := regexp.Compile(s)
+		if err == nil {
+			myName.patterns = append(myName.patterns, p)
+		}
+	}
+	return myName
+}
+
+func (p *MyName) matchAbsoluteURI(absoluteURI string) bool {
+	for _, name := range p.names {
+		if absoluteURI == name {
+			return true
+		}
+	}
+
+	for _, pattern := range p.patterns {
+		if pattern.MatchString(absoluteURI) {
+			return true
+		}
+	}
+	return false
+
+}
+
+func (p *MyName) matchSIPURI(user string, hostName string) bool {
+	for _, name := range p.names {
+		pos := strings.Index(name, "@")
+		if pos == -1 {
+			if hostName == name {
+				return true
+			}
+		} else {
+			if hostName == name[pos+1:] && user == name[0:pos] {
+				return true
+			}
+		}
+	}
+
+	userHost := fmt.Sprintf( "%s@%s", user, hostName )
+	for _, pattern := range p.patterns {
+		if pattern.MatchString(userHost) {
+			return true
+		}
+		
+	}
+	return false
+
+}
+
+func (p *MyName) isMyMessage(msg *Message) bool {
+	requestURI, err := msg.GetRequestURI()
+	if err != nil {
+		log.Error("Fail to find the requestURI in message:", msg)
+		return false
+	}
+	absoluteURI, err := requestURI.GetAbsoluteURI()
+	if err == nil {
+		if p.matchAbsoluteURI(absoluteURI.String()) {
+			return true
+		}
+	}
+
+	sipUri, err := requestURI.GetSIPURI()
+	if err == nil {
+		if sipUri.Host == msg.ReceivedFrom.GetAddress() && sipUri.GetPort() == msg.ReceivedFrom.GetPort() {
+			return true
+		}
+		if p.matchSIPURI(sipUri.User, sipUri.Host) {
+			return true
+		}
+	}
+	return false
+
+}
+
 type Proxy struct {
-	names                []string
+	myName               *MyName
 	preConfigRoute       *PreConfigRoute
 	resolver             *PreConfigHostResolver
 	items                []*ProxyItem
@@ -44,7 +132,7 @@ func NewProxy(name string,
 	preConfigRoute *PreConfigRoute,
 	resolver *PreConfigHostResolver,
 	selfLearnRoute *SelfLearnRoute) *Proxy {
-	proxy := &Proxy{names: strings.Split(name, ","),
+	proxy := &Proxy{myName: NewMyName(name),
 		preConfigRoute:       preConfigRoute,
 		resolver:             resolver,
 		items:                make([]*ProxyItem, 0),
@@ -126,43 +214,6 @@ func (p *Proxy) startItem(item *ProxyItem) error {
 	return item.start(p)
 }
 
-func (p *Proxy) isMyMessage(msg *Message) bool {
-	requestURI, err := msg.GetRequestURI()
-	if err != nil {
-		log.Error("Fail to find the requestURI in message:", msg)
-		return false
-	}
-	absoluteURI, err := requestURI.GetAbsoluteURI()
-	if err == nil {
-		for _, name := range p.names {
-			if absoluteURI.String() == name {
-				return true
-			}
-		}
-	}
-
-	sipUri, err := requestURI.GetSIPURI()
-	if err == nil {
-		if sipUri.Host == msg.ReceivedFrom.GetAddress() && sipUri.GetPort() == msg.ReceivedFrom.GetPort() {
-			return true
-		}
-		for _, name := range p.names {
-			pos := strings.Index(name, "@")
-			if pos == -1 {
-				if sipUri.Host == name {
-					return true
-				}
-			} else {
-				if sipUri.Host == name[pos+1:] && sipUri.User == name[0:pos] {
-					return true
-				}
-			}
-		}
-	}
-	return false
-
-}
-
 func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 	msg := rawMessage.Message
 	msg.ReceivedFrom = rawMessage.From
@@ -239,7 +290,7 @@ func (p *Proxy) handleDialog(peerAddr string, peerPort int, msg *Message) {
 func (p *Proxy) HandleMessage(msg *Message) {
 	log.WithFields(log.Fields{"host": msg.ReceivedFrom.GetAddress(), "port": msg.ReceivedFrom.GetPort(), "mesasge": msg}).Debug("Received a message")
 	if msg.IsRequest() {
-		if p.isMyMessage(msg) {
+		if p.myName.isMyMessage(msg) {
 			log.Info("it is my request")
 			p.sendToBackend(msg)
 		} else {
