@@ -103,7 +103,7 @@ func (p *MyName) isMyMessage(msg *Message) bool {
 
 	sipUri, err := requestURI.GetSIPURI()
 	if err == nil {
-		if sipUri.Host == msg.ReceivedFrom.GetAddress() && sipUri.GetPort() == msg.ReceivedFrom.GetPort() {
+		if msg.ReceivedFrom != nil && sipUri.Host == msg.ReceivedFrom.GetAddress() && sipUri.GetPort() == msg.ReceivedFrom.GetPort() {
 			return true
 		}
 		if p.matchSIPURI(sipUri.User, sipUri.Host) {
@@ -477,7 +477,7 @@ func (p *Proxy) getNextRequestHopByConfig(msg *Message) (host string, port int, 
 	}
 	destHost, err := to.GetHost()
 	if err != nil {
-		log.Error("Fail to find the Host in header To of message:", msg)
+		log.Warn("Fail to find the Host in header To of message:", msg)
 		return "", 0, "", fmt.Errorf("Fail to find Host in To header of message")
 	}
 	transport, host, port, err = p.preConfigRoute.FindRoute(destHost)
