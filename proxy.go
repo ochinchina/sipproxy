@@ -77,12 +77,12 @@ func (p *MyName) matchSIPURI(user string, hostName string) bool {
 		}
 	}
 
-	userHost := fmt.Sprintf( "%s@%s", user, hostName )
+	userHost := fmt.Sprintf("%s@%s", user, hostName)
 	for _, pattern := range p.patterns {
 		if pattern.MatchString(userHost) {
 			return true
 		}
-		
+
 	}
 	return false
 
@@ -290,20 +290,20 @@ func (p *Proxy) handleDialog(peerAddr string, peerPort int, msg *Message) {
 func (p *Proxy) HandleMessage(msg *Message) {
 	log.WithFields(log.Fields{"host": msg.ReceivedFrom.GetAddress(), "port": msg.ReceivedFrom.GetPort(), "mesasge": msg}).Debug("Received a message")
 	if msg.IsRequest() {
-		host, port, transport, err := p.getNextRequestHop( msg )
+		host, port, transport, err := p.getNextRequestHop(msg)
 		if err == nil {
 			log.Info("Get next hop, host=", host, ",port=", port, ",transport=", transport)
-                        serverTrans, ok := p.selfLearnRoute.GetRoute(host)
-                        if ok {
-                                p.addVia(msg, serverTrans)
-                                p.addRecordRoute(msg, serverTrans)
-                        }
-                        if err != nil {
-                                log.Error("Fail to find the next hop for request:", msg)
-                        } else {
-                                p.sendMessage(host, port, transport, msg)
-                        }
-		} else if p.myName.isMyMessage(msg) { 
+			serverTrans, ok := p.selfLearnRoute.GetRoute(host)
+			if ok {
+				p.addVia(msg, serverTrans)
+				p.addRecordRoute(msg, serverTrans)
+			}
+			if err != nil {
+				log.Error("Fail to find the next hop for request:", msg)
+			} else {
+				p.sendMessage(host, port, transport, msg)
+			}
+		} else if p.myName.isMyMessage(msg) {
 			log.Info("it is my request")
 			p.sendToBackend(msg)
 		} else {
@@ -472,7 +472,7 @@ func (p *Proxy) getNextRequestHop(msg *Message) (host string, port int, transpor
 func (p *Proxy) getNextRequestHopByConfig(msg *Message) (host string, port int, transport string, err error) {
 	to, err := msg.GetTo()
 	if err != nil {
-		log.Error("Fail to find the header To im message:", msg)
+		log.Warn("Fail to find the header To im message:", msg)
 		return "", 0, "", fmt.Errorf("No To header in message")
 	}
 	destHost, err := to.GetHost()

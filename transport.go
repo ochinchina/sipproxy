@@ -47,12 +47,19 @@ type ServerTransport interface {
 	GetPort() int
 }
 
+type SizedByteArray struct {
+	b          []byte
+	n          int
+	msgHandler func(msg *Message)
+}
 type UDPServerTransport struct {
 	localAddr       *net.UDPAddr
 	conn            *net.UDPConn
 	receivedSupport bool
 	selfLearnRoute  *SelfLearnRoute
 	msgHandler      MessageHandler
+	msgBufPool      *ByteArrayPool
+	msgParseChannel chan SizedByteArray
 }
 
 type ConnectionAcceptedListener interface {
@@ -278,6 +285,8 @@ func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLear
 	return &UDPServerTransport{localAddr: localAddr,
 		receivedSupport: receivedSupport,
 		msgHandler:      nil,
+		msgParseChannel: make(chan SizedByteArray, 4096),
+		msgBufPool:      NewByteArrayPool(4096, 64*1024),
 		selfLearnRoute:  selfLearnRoute}, nil
 }
 
@@ -308,13 +317,14 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 	}
 	u.conn = conn
 	log.WithFields(log.Fields{"localAddr": u.localAddr}).Info("Success to listen on UDP")
+	go u.startParseMessage()
 	go u.receiveMessage()
 	return nil
 }
 
 func (u *UDPServerTransport) receiveMessage() {
-	buf := make([]byte, 1024*64)
 	for {
+		buf := u.msgBufPool.Alloc()
 		n, peerAddr, err := u.conn.ReadFromUDP(buf)
 		if err != nil {
 			log.WithFields(log.Fields{"localAddr": u.localAddr, "error": err}).Error("Fail to read data")
@@ -323,14 +333,23 @@ func (u *UDPServerTransport) receiveMessage() {
 		address := peerAddr.IP.String()
 		port := peerAddr.Port
 		log.WithFields(log.Fields{"length": n, "localAddr": u.localAddr, "remoteAddr": peerAddr}).Info("a UDP packet is received")
-		reader := bufio.NewReaderSize(bytes.NewBuffer(buf), n)
-		msg, err := ParseMessage(reader)
-		if err == nil {
+		u.msgParseChannel <- SizedByteArray{b: buf, n: n, msgHandler: func(msg *Message) {
 			u.msgHandler.HandleRawMessage(NewRawMessage(address, port, u, u.receivedSupport, msg))
-		}
+		}}
 
 	}
+}
 
+func (u *UDPServerTransport) startParseMessage() {
+	for {
+		sized_byte_array := <-u.msgParseChannel
+		reader := bufio.NewReaderSize(bytes.NewBuffer(sized_byte_array.b), sized_byte_array.n)
+		msg, err := ParseMessage(reader)
+		u.msgBufPool.Free(sized_byte_array.b)
+		if err == nil {
+			sized_byte_array.msgHandler(msg)
+		}
+	}
 }
 
 func (u *UDPServerTransport) GetProtocol() string {
