@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	log "github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 	"net"
 	"strings"
 	"sync"
@@ -108,7 +108,7 @@ func (r *DynamicHostResolver) getHostnames() []string {
 // Stop stop the hostname resolve
 func (r *DynamicHostResolver) Stop() {
 	if atomic.CompareAndSwapInt32(&r.stop, 0, 1) {
-		log.Info("stop the hostname to IP resolve")
+		zap.L().Info("stop the hostname to IP resolve")
 	}
 }
 
@@ -133,7 +133,7 @@ func (r *DynamicHostResolver) periodicalResolve() {
 		for _, hostname := range hostnames {
 			addrs, err := r.doResolve(hostname)
 			if err != nil {
-				log.WithFields(log.Fields{"hostname": hostname}).Error("Fail to resolve host to IP")
+				zap.L().Error("Fail to resolve host to IP", zap.String("hostname", hostname))
 			}
 			r.addressResolved(hostname, addrs, err)
 		}
@@ -151,7 +151,7 @@ func (r *DynamicHostResolver) addressResolved(hostname string, addrs []string, e
 				newAddrs := make([]string, 0)
 				removedAddrs := entry.addrs
 				entry.addrs = newAddrs
-				log.WithFields(log.Fields{"hostname": hostname, "failed": entry.failed}).Error("the failed times for resolving hostname exceeds 3")
+				zap.L().Error("the failed times for resolving hostname exceeds 3", zap.String("hostname", hostname), zap.Int("failed", entry.failed))
 				entry.failed = 0
 				go entry.callback(hostname, newAddrs, removedAddrs)
 			}
@@ -161,7 +161,7 @@ func (r *DynamicHostResolver) addressResolved(hostname string, addrs []string, e
 			entry.failed = 0
 			entry.addrs = addrs
 			if len(newAddrs) > 0 || len(removedAddrs) > 0 {
-				log.WithFields(log.Fields{"hostname": hostname, "newAddrs": strings.Join(newAddrs, ","), "removedAddrs": strings.Join(removedAddrs, ",")}).Info("the ip address of host is changed")
+				zap.L().Info("the ip address of host is changed", zap.String("hostname", hostname), zap.String("newAddrs", strings.Join(newAddrs, ",")), zap.String("removedAddrs", strings.Join(removedAddrs, ",")))
 				go entry.callback(hostname, newAddrs, removedAddrs)
 			}
 		}

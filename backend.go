@@ -3,7 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
-	log "github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 	"net"
 	"net/url"
 	"strings"
@@ -149,9 +149,9 @@ func (b *UDPBackend) Send(msg *Message) error {
 
 	n, err := b.udpConn.WriteToUDP(bytes, b.backendAddr)
 	if err == nil {
-		log.WithFields(log.Fields{"address": b.backendAddr, "bytes": n}).Info("Succeed send message to backend")
+		zap.L().Info("Succeed send message to backend", zap.String("address", b.backendAddr.String()), zap.Int("bytes", n))
 	} else {
-		log.WithFields(log.Fields{"address": b.backendAddr}).Error("Fail to send message to backend")
+		zap.L().Error("Fail to send message to backend", zap.String("address", b.backendAddr.String()))
 	}
 
 	return err
@@ -164,9 +164,9 @@ func (b *UDPBackend) GetAddress() string {
 func (b *UDPBackend) Close() {
 	err := b.udpConn.Close()
 	if err == nil {
-		log.WithFields(log.Fields{"address": b.udpConn.RemoteAddr()}).Info("Succeed to close udp backend")
+		zap.L().Info("Succeed to close udp backend", zap.String("address", b.udpConn.RemoteAddr().String()))
 	} else {
-		log.WithFields(log.Fields{"address": b.udpConn.RemoteAddr()}).Error("Fail to close udp backend")
+		zap.L().Error("Fail to close udp backend", zap.String("address", b.udpConn.RemoteAddr().String()))
 	}
 }
 
@@ -186,17 +186,17 @@ func (t *TCPBackend) Send(msg *Message) error {
 		if t.conn == nil {
 			conn, err := net.Dial("tcp", t.backendAddr)
 			if err != nil {
-				log.WithFields(log.Fields{"backendAddr": t.backendAddr}).Error("Fail to connect backend")
+				zap.L().Error("Fail to connect backend", zap.String("backendAddr", t.backendAddr))
 				return err
 			}
 			t.conn = conn
 		}
 		_, err := t.conn.Write(b)
 		if err == nil {
-			log.WithFields(log.Fields{"backendAddr": t.backendAddr}).Debug("Succeed to send message to backend")
+			zap.L().Debug("Succeed to send message to backend", zap.String("backendAddr", t.backendAddr))
 			return nil
 		}
-		log.WithFields(log.Fields{"backendAddr": t.backendAddr}).Debug("Fail to send message to backend")
+		zap.L().Debug("Fail to send message to backend", zap.String("backendAddr", t.backendAddr))
 		t.conn.Close()
 		t.conn = nil
 	}
@@ -271,7 +271,7 @@ func (rb *RoundRobinBackend) GetAllBackend() map[string]Backend {
 func (rb *RoundRobinBackend) Send(msg *Message) error {
 	index, err := rb.getNextBackendIndex()
 	if err != nil {
-		log.WithFields(log.Fields{"error": err}).Error("Fail to send message")
+		zap.L().Error("Fail to send message", zap.String("error", err.Error()))
 		return errors.New("Fail to get next backend")
 	}
 
@@ -329,7 +329,7 @@ func (rb *RoundRobinBackend) AddBackendChangeListener(listener BackendChangeList
 
 func (rb *RoundRobinBackend) hostIPChanged(protocol string, localhostport, hostname string, newIPs []string, removedIPs []string, port string) {
 	for _, ip := range newIPs {
-		log.WithFields(log.Fields{"ip": ip}).Info("find a new IP for ", hostname)
+		zap.L().Info("find a new IP for host", zap.String("host", hostname), zap.String("ip", ip))
 		if protocol == "udp" {
 			hostport := fmt.Sprintf("%s:%s", ip, port)
 			if isIPv6(ip) {
@@ -342,7 +342,7 @@ func (rb *RoundRobinBackend) hostIPChanged(protocol string, localhostport, hostn
 		}
 	}
 	for _, ip := range removedIPs {
-		log.WithFields(log.Fields{"ip": ip}).Info("remve ip for ", hostname)
+		zap.L().Info("remove ip for host", zap.String("host", hostname), zap.String("ip", ip))
 		hostport := fmt.Sprintf("%s:%s", ip, port)
 		if isIPv6(ip) {
 			hostport = fmt.Sprintf("[%s]:%s", ip, port)

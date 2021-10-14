@@ -1,15 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"fmt"
 	"testing"
 )
 
-
-func TestIsMyMessage(t *testing.T ) {
-	s:= `admin:
+func TestIsMyMessage(t *testing.T) {
+	s := `admin:
   addr: "127.0.0.1:8899"
 proxies:
 - name: .+
@@ -46,26 +45,26 @@ v=0
 o=SAMSUNG-IMS-UE 1485460186254456 0 IN IP4 10.161.118.70
 s=SS VOIP`
 
-	msg, err := ParseMessage( bufio.NewReader(bytes.NewBufferString(msg_txt)))
+	msg, err := ParseMessage(bufio.NewReader(bytes.NewBufferString(msg_txt)))
 
 	if err != nil {
 		t.Fail()
 	}
-	r := bytes.NewBufferString( s )
-	config, err := loadConfigFromReader( r )
+	r := bytes.NewBufferString(s)
+	config, err := loadConfigFromReader(r)
 	if err != nil {
 		t.Fail()
 	}
-	myName := NewMyName( config.Proxies[0].Name )
+	myName := NewMyName(config.Proxies[0].Name)
 
-	if !myName.isMyMessage( msg ) {
+	if !myName.isMyMessage(msg) {
 		t.Fail()
 	}
-	
+
 }
 
-func TestIsMyMessage2(t *testing.T ) {
-        s:= `admin:
+func TestIsMyMessage2(t *testing.T) {
+	s := `admin:
   addr: "127.0.0.1:8899"
 proxies:
 - name: .+
@@ -105,21 +104,21 @@ Content-Length: 4
 
 test`
 
-	msg, err := ParseMessage( bufio.NewReader(bytes.NewBufferString(msg_txt)))
+	msg, err := ParseMessage(bufio.NewReader(bytes.NewBufferString(msg_txt)))
 
-        if err != nil {
-                t.Fail()
-        }
-        r := bytes.NewBufferString( s )
-        config, err := loadConfigFromReader( r )
-        if err != nil {
-                t.Fail()
-        }
+	if err != nil {
+		t.Fail()
+	}
+	r := bytes.NewBufferString(s)
+	config, err := loadConfigFromReader(r)
+	if err != nil {
+		t.Fail()
+	}
 	fmt.Println(config.Proxies[0].Name)
-        myName := NewMyName( config.Proxies[0].Name )
+	myName := NewMyName(config.Proxies[0].Name)
 
-        if !myName.isMyMessage( msg ) {
-                t.Fail()
-        }
+	if !myName.isMyMessage(msg) {
+		t.Fail()
+	}
 
 }

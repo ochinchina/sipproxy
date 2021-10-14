@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	log "github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 	"net"
 	"regexp"
 	"strconv"
@@ -91,7 +91,7 @@ func (p *MyName) matchSIPURI(user string, hostName string) bool {
 func (p *MyName) isMyMessage(msg *Message) bool {
 	requestURI, err := msg.GetRequestURI()
 	if err != nil {
-		log.Error("Fail to find the requestURI in message:", msg)
+		zap.L().Error("Fail to find the requestURI in message", zap.String("message", msg.String()))
 		return false
 	}
 	absoluteURI, err := requestURI.GetAbsoluteURI()
@@ -241,7 +241,7 @@ func (p *Proxy) getBackendOfResponse(addr string, msg *Message) (Backend, error)
 		return backendWithParent.backend, nil
 	}
 
-	log.WithFields(log.Fields{"backendAddr": addr}).Warn("Fail to find backend by address")
+	zap.L().Warn("Fail to find backend by address", zap.String("backendAddr", addr))
 
 	transId, err := msg.GetClientTransaction()
 	if err != nil {
@@ -249,7 +249,7 @@ func (p *Proxy) getBackendOfResponse(addr string, msg *Message) (Backend, error)
 	}
 	backend, err := p.dialogBasedBackends.GetBackend(transId)
 	if err != nil {
-		log.WithFields(log.Fields{"clientTransaction": transId}).Warn("Fail to find backend by transaction")
+		zap.L().Warn("Fail to find backend by transaction", zap.String("clientTransaction", transId))
 	}
 
 	if msg.IsFinalResponse() {
@@ -274,13 +274,13 @@ func (p *Proxy) handleDialog(peerAddr string, peerPort int, msg *Message) {
 		case "INVITE":
 			dialog, _ := msg.GetDialog()
 			if dialog != "" {
-				log.WithFields(log.Fields{"backendAddr": addr, "dialog": dialog}).Info("dialog is bind to backend")
+				zap.L().Info("dialog is bind to backend", zap.String("backendAddr", addr), zap.String("dialog", dialog))
 				p.dialogBasedBackends.AddBackend(dialog, backend)
 			}
 		case "BYE":
 			dialog, _ := msg.GetDialog()
 			if dialog != "" {
-				log.WithFields(log.Fields{"backendAddr": addr, "dialog": dialog}).Info("dialog is closed")
+				zap.L().Info("dialog is closed", zap.String("backendAddr", addr), zap.String("dialog", dialog))
 				p.dialogBasedBackends.RemoveDialog(dialog)
 			}
 		}
@@ -288,26 +288,26 @@ func (p *Proxy) handleDialog(peerAddr string, peerPort int, msg *Message) {
 }
 
 func (p *Proxy) HandleMessage(msg *Message) {
-	log.WithFields(log.Fields{"host": msg.ReceivedFrom.GetAddress(), "port": msg.ReceivedFrom.GetPort(), "mesasge": msg}).Debug("Received a message")
+	zap.L().Debug("Received a message", zap.String("host", msg.ReceivedFrom.GetAddress()), zap.Int("port", msg.ReceivedFrom.GetPort()), zap.String("message", msg.String()))
 	if msg.IsRequest() {
 		host, port, transport, err := p.getNextRequestHop(msg)
 		if err == nil {
-			log.Info("Get next hop, host=", host, ",port=", port, ",transport=", transport)
+			zap.L().Info("Get next hop", zap.String("host", host), zap.Int("port", port), zap.String("transport", transport))
 			serverTrans, ok := p.selfLearnRoute.GetRoute(host)
 			if ok {
 				p.addVia(msg, serverTrans)
 				p.addRecordRoute(msg, serverTrans)
 			}
 			if err != nil {
-				log.Error("Fail to find the next hop for request:", msg)
+				zap.L().Error("Fail to find the next hop for request", zap.String("message", msg.String()))
 			} else {
 				p.sendMessage(host, port, transport, msg)
 			}
 		} else if p.myName.isMyMessage(msg) {
-			log.Info("it is my request")
+			zap.L().Info("it is my request")
 			p.sendToBackend(msg)
 		} else {
-			log.Error("Not my message, fail to route the message")
+			zap.L().Error("Not my message, fail to route the message")
 		}
 	} else {
 		msg.PopVia()
@@ -317,13 +317,14 @@ func (p *Proxy) HandleMessage(msg *Message) {
 			addr := fmt.Sprintf("%s:%d", host, port)
 			if backendWithParent, ok := p.backends[addr]; ok {
 				if dialog, err := msg.GetDialog(); err == nil {
-					log.WithFields(log.Fields{"dialog": dialog, "backend": backendWithParent.backend.GetAddress()}).Info("bind the dialog to the response")
+					zap.L().Info("bind the dialog to the response", zap.String("dialog", dialog), zap.String("backend", backendWithParent.backend.GetAddress()))
+
 					p.dialogBasedBackends.AddBackend(dialog, backendWithParent.backend)
 				}
 			}
 		}
 		if err != nil {
-			log.WithFields(log.Fields{"message": msg}).Error("Fail to find the next hop for response")
+			zap.L().Error("Fail to find the next hop for response", zap.String("message", msg.String()))
 		} else {
 			p.sendMessage(host, port, transport, msg)
 		}
@@ -344,7 +345,7 @@ func (p *Proxy) addVia(msg *Message, transport ServerTransport) (*Via, error) {
 	viaParam := CreateViaParam(transport.GetProtocol(), transport.GetAddress(), transport.GetPort())
 	branch, err := CreateBranch()
 	if err != nil {
-		log.Error("Fail to create branch parameter")
+		zap.L().Error("Fail to create branch parameter")
 		return nil, err
 	}
 	viaParam.SetBranch(branch)
@@ -369,7 +370,7 @@ func (p *Proxy) addRecordRoute(msg *Message, transport ServerTransport) {
 func (p *Proxy) sendToBackend(msg *Message) {
 	backendItem := p.findBackendProxyItem()
 	if backendItem == nil {
-		log.Error("Fail to find the backend for my message\n", msg)
+		zap.L().Error("Fail to find the backend for my message", zap.String("message", msg.String()))
 	} else {
 		backend, transport, err := p.findBackendByDialog(msg)
 		if err != nil {
@@ -385,7 +386,7 @@ func (p *Proxy) sendToBackend(msg *Message) {
 		if err == nil {
 			transId, err := msg.GetClientTransaction()
 			if err == nil {
-				log.WithFields(log.Fields{"trandId": transId, "backend": backend}).Debug("bind client transaction with backend")
+				zap.L().Debug("bind client transaction with backend", zap.String("trandId", transId), zap.String("backend", backend.GetAddress()))
 				p.dialogBasedBackends.AddBackend(transId, backend)
 			}
 		}
@@ -412,16 +413,16 @@ func (p *Proxy) findBackendByDialog(msg *Message) (Backend, ServerTransport, err
 	backend, err := p.dialogBasedBackends.GetBackend(dialog)
 	var transport ServerTransport = nil
 	if err == nil {
-		log.WithFields(log.Fields{"backendAddr": backend.GetAddress(), "dialog": dialog}).Info("find backend by dialog")
+		zap.L().Info("find backend by dialog", zap.String("backendAddr", backend.GetAddress()), zap.String("dialog", dialog))
 		transport, _ = p.findTransportByBackendAddr(backend.GetAddress())
 	} else {
-		log.WithFields(log.Fields{"dialog": dialog, "error": err}).Warn("Fail to find backend by dialog")
+		zap.L().Warn("Fail to find backend by dialog", zap.String("dialog", dialog), zap.String("error", err.Error()))
 	}
 	// remove the SUBSCRIBE initialized dialog if the Subscription-State is terminated in NOTIFY message
 	if method == "NOTIFY" {
 		if v, err := msg.GetHeaderValue("Subscription-State"); err == nil {
 			if s, ok := v.(string); ok && s == "terminated" {
-				log.WithFields(log.Fields{"dialog": dialog}).Info("remove the dialog")
+				zap.L().Info("remove the dialog", zap.String("dialog", dialog))
 				p.dialogBasedBackends.RemoveDialog(dialog)
 			}
 		}
@@ -433,7 +434,7 @@ func (p *Proxy) findTransportByBackendAddr(addr string) (ServerTransport, error)
 	if backendWithParent, ok := p.backends[addr]; ok {
 		proxyItem := p.findProxyItemByRoundrobinBackend(backendWithParent.parent)
 		if proxyItem == nil {
-			log.WithFields(log.Fields{"backendAddr": addr}).Warn("Fail to find backend by address")
+			zap.L().Warn("Fail to find backend by address", zap.String("backendAddr", addr))
 		} else {
 			return proxyItem.transports[0], nil
 		}
@@ -472,12 +473,12 @@ func (p *Proxy) getNextRequestHop(msg *Message) (host string, port int, transpor
 func (p *Proxy) getNextRequestHopByConfig(msg *Message) (host string, port int, transport string, err error) {
 	to, err := msg.GetTo()
 	if err != nil {
-		log.Warn("Fail to find the header To im message:", msg)
+		zap.L().Warn("Fail to find the header To im message", zap.String("message", msg.String()))
 		return "", 0, "", fmt.Errorf("No To header in message")
 	}
 	destHost, err := to.GetHost()
 	if err != nil {
-		log.Warn("Fail to find the Host in header To of message:", msg)
+		zap.L().Warn("Fail to find the Host in header To of message", zap.String("message", msg.String()))
 		return "", 0, "", fmt.Errorf("Fail to find Host in To header of message")
 	}
 	transport, host, port, err = p.preConfigRoute.FindRoute(destHost)
@@ -556,7 +557,7 @@ func (p *Proxy) sendMessage(host string, port int, transport string, msg *Messag
 	if err == nil {
 		t.Send(msg)
 	} else {
-		log.WithFields(log.Fields{"host": host, "port": port, "transport": transport, "message": msg}).Error("Fail to find the transport by ", transport)
+		zap.L().Error("Fail to find the transport", zap.String("host", host), zap.Int("port", port), zap.String("transport", transport), zap.String("message", msg.String()))
 	}
 }
 

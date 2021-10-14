@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	log "github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 	"net"
 	"strconv"
 	"strings"
@@ -131,7 +131,7 @@ var SupportedProtocol = map[string]string{"udp": "udp", "tcp": "tcp"}
 func NewUDPClientTransport(host string, port int) (*UDPClientTransport, error) {
 	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", host, port))
 	if err != nil {
-		log.WithFields(log.Fields{"host": host, "port": port, "error": err}).Error("Fail to resolve udp host address")
+		zap.L().Error("Fail to resolve udp host address", zap.String("host", host), zap.Int("port", port), zap.String("error", err.Error()))
 		return nil, err
 	}
 	laddr, _ := net.ResolveUDPAddr("udp", ":0")
@@ -150,7 +150,7 @@ func (u *UDPClientTransport) connect() error {
 	if u.conn == nil {
 		conn, err := net.ListenUDP("udp", u.localAddr)
 		if err != nil {
-			log.WithFields(log.Fields{"localAddr": u.localAddr, "error": err}).Error("Fail to listen on UDP")
+			zap.L().Error("Fail to listen on UDP", zap.String("localAddr", u.localAddr.String()), zap.String("error", err.Error()))
 			return err
 		}
 		u.conn = conn
@@ -169,9 +169,9 @@ func (u *UDPClientTransport) Send(msg *Message) error {
 	}
 	n, err := u.conn.WriteToUDP(b, u.remoteAddr)
 	if err == nil {
-		log.WithFields(log.Fields{"length": n, "localAddr": u.localAddr, "remoteAddr": u.remoteAddr, "message": msg}).Info("Succeed to send message")
+		zap.L().Info("Succeed to send message", zap.Int("length", n), zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()))
 	} else {
-		log.WithFields(log.Fields{"localAddr": u.localAddr, "remoteAddr": u.remoteAddr, "error": err, "message": msg}).Error("Fail to send message")
+		zap.L().Error("Fail to send message", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()), zap.String("error", err.Error()))
 	}
 	return err
 
@@ -252,17 +252,17 @@ func (t *TCPClientTransport) Send(msg *Message) error {
 		if t.conn == nil {
 			conn, err := net.Dial("tcp", t.addr)
 			if err != nil {
-				log.WithFields(log.Fields{"addr": t.addr}).Error("Fail to connect tcp server")
+				zap.L().Error("Fail to connect tcp server", zap.String("addr", t.addr))
 				return err
 			}
 			t.conn = conn
 		}
 		_, err := t.conn.Write(b)
 		if err == nil {
-			log.WithFields(log.Fields{"addr": t.addr}).Debug("Succeed to send message to server")
+			zap.L().Debug("Succeed to send message to server", zap.String("addr", t.addr))
 			return nil
 		}
-		log.WithFields(log.Fields{"addr": t.addr}).Error("Fail to send message to server")
+		zap.L().Error("Fail to send message to server", zap.String("addr", t.addr))
 		if t.reconnectable {
 			t.conn.Close()
 			t.conn = nil
@@ -270,16 +270,16 @@ func (t *TCPClientTransport) Send(msg *Message) error {
 			break
 		}
 	}
-	log.WithFields(log.Fields{"addr": t.addr}).Error("Fail to send message to tcp server")
+	zap.L().Error("Fail to send message to tcp server", zap.String("addr", t.addr))
 	return fmt.Errorf("Fail to send message to %s", t.addr)
 }
 
 func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) (*UDPServerTransport, error) {
 
-	log.WithFields(log.Fields{"addr": addr, "port": port}).Info("Create new UDP server transport")
+	zap.L().Info("Create new UDP server transport", zap.String("addr", addr), zap.Int("port", port))
 	localAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(addr, strconv.Itoa(port)))
 	if err != nil {
-		log.WithFields(log.Fields{"addr": addr, "port": port}).Error("Not a valid ip address")
+		zap.L().Error("Not a valid ip address", zap.String("addr", addr), zap.Int("port", port))
 		return nil, err
 	}
 	return &UDPServerTransport{localAddr: localAddr,
@@ -301,9 +301,9 @@ func (u *UDPServerTransport) Send(host string, port int, msg *Message) error {
 	}
 	n, err := u.conn.WriteToUDP(b, remoteAddr)
 	if err == nil {
-		log.WithFields(log.Fields{"length": n, "localAddr": u.localAddr, "remoteAddress": remoteAddr}).Info("Succeed to send message")
+		zap.L().Info("Succeed to send message", zap.Int("length", n), zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddress", remoteAddr.String()))
 	} else {
-		log.WithFields(log.Fields{"localAddr": u.localAddr, "remoteAddress": remoteAddr, "error": err}).Error("Fail to send message")
+		zap.L().Error("Fail to send message", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddress", remoteAddr.String()), zap.String("error", err.Error()))
 	}
 	return err
 }
@@ -312,11 +312,11 @@ func (u *UDPServerTransport) Start(msgHandler MessageHandler) error {
 	u.msgHandler = msgHandler
 	conn, err := net.ListenUDP("udp", u.localAddr)
 	if err != nil {
-		log.WithFields(log.Fields{"localAddr": u.localAddr}).Error("Fail to listen on UDP")
+		zap.L().Error("Fail to listen on UDP", zap.String("localAddr", u.localAddr.String()))
 		return err
 	}
 	u.conn = conn
-	log.WithFields(log.Fields{"localAddr": u.localAddr}).Info("Success to listen on UDP")
+	zap.L().Info("Success to listen on UDP", zap.String("localAddr", u.localAddr.String()))
 	go u.startParseMessage()
 	go u.receiveMessage()
 	return nil
@@ -327,12 +327,12 @@ func (u *UDPServerTransport) receiveMessage() {
 		buf := u.msgBufPool.Alloc()
 		n, peerAddr, err := u.conn.ReadFromUDP(buf)
 		if err != nil {
-			log.WithFields(log.Fields{"localAddr": u.localAddr, "error": err}).Error("Fail to read data")
+			zap.L().Error("Fail to read data", zap.String("localAddr", u.localAddr.String()), zap.String("error", err.Error()))
 			break
 		}
 		address := peerAddr.IP.String()
 		port := peerAddr.Port
-		log.WithFields(log.Fields{"length": n, "localAddr": u.localAddr, "remoteAddr": peerAddr}).Info("a UDP packet is received")
+		zap.L().Info("a UDP packet is received", zap.Int("length", n), zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", peerAddr.String()))
 		u.msgParseChannel <- SizedByteArray{b: buf, n: n, msgHandler: func(msg *Message) {
 			u.msgHandler.HandleRawMessage(NewRawMessage(address, port, u, u.receivedSupport, msg))
 		}}
@@ -384,10 +384,10 @@ func (t *TCPServerTransport) Start(msgHandler MessageHandler) error {
 	hostPort := net.JoinHostPort(t.addr, strconv.Itoa(t.port))
 	ln, err := net.Listen("tcp", hostPort)
 	if err != nil {
-		log.Error("Fail to listen on ", hostPort)
+		zap.L().Error("Fail to listen", zap.String("hostPort", hostPort))
 		return err
 	}
-	log.Info("Succeed listen on ", hostPort)
+	zap.L().Info("Succeed listen", zap.String("hostPort", hostPort))
 	go t.acceptConnection(ln)
 	return nil
 }
@@ -396,11 +396,11 @@ func (t *TCPServerTransport) acceptConnection(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err == nil {
-			log.WithFields(log.Fields{"localAddr": ln.Addr(), "remoteAddr": conn.RemoteAddr()}).Info("Accept a connection")
+			zap.L().Info("Accept a connection", zap.String("localAddr", ln.Addr().String()), zap.String("remoteAddr", conn.RemoteAddr().String()))
 			t.connAcceptedListener.ConnectionAccepted(conn)
 			go t.receiveMessage(conn)
 		} else {
-			log.WithFields(log.Fields{"localAddr": ln.Addr(), "error": err}).Error("Fail to accept client connection")
+			zap.L().Error("Fail to accept client connection", zap.String("localAddr", ln.Addr().String()), zap.String("error", err.Error()))
 			break
 		}
 	}

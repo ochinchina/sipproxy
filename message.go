@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	log "github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 	"io"
 	"strconv"
 	"strings"
@@ -202,7 +202,7 @@ func ParseMessage(reader *bufio.Reader) (*Message, error) {
 			} else {
 				response, err := parseStatusLine(line)
 				if err != nil {
-					log.WithFields(log.Fields{"error": err}).Error("Fail to parse status line:", line)
+					zap.L().Error("Fail to parse status line", zap.String("line", line), zap.String("error", err.Error()))
 					return nil, err
 				}
 				msg.response = response
@@ -627,7 +627,7 @@ func (m *Message) TryRemoveTopRoute(myAddr string, myPort int) error {
 	}
 	sipUri, err := routeParam.GetAddress().GetAddress().GetSIPURI()
 	if err == nil && sipUri.Host == myAddr && sipUri.GetPort() == myPort {
-		log.WithFields(log.Fields{"route-param": routeParam}).Info("remove top route item because the top item is my address")
+		zap.L().Info("remove top route item because the top item is my address", zap.String("route-param", routeParam.String()))
 		m.PopRoute()
 	}
 	return nil

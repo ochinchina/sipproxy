@@ -1,13 +1,13 @@
 package main
 
 import (
-	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"gopkg.in/yaml.v3"
 	"io"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -45,54 +45,46 @@ type ProxiesConfigure struct {
 }
 
 func init() {
-	log.SetOutput(os.Stdout)
-	disableColors := (runtime.GOOS == "windows")
-
-	log.SetFormatter(&log.TextFormatter{DisableColors: disableColors,
-		FullTimestamp: true,
-		ForceQuote:    false,
-		DisableQuote:  isQuoteDisabled()})
-
-	log.SetLevel(log.DebugLevel)
 }
 
-func isQuoteDisabled() bool {
-	disableQuoteEnv := strings.ToLower(os.Getenv("DISABLE_QUOTE"))
-
-	return disableQuoteEnv == "true" || disableQuoteEnv == "t" || disableQuoteEnv == "yes" || disableQuoteEnv == "y"
-}
-
-func initLog(logFile string, strLevel string, logSize int, backups int) {
-	level, err := log.ParseLevel(strLevel)
-	if err != nil {
-		level = log.InfoLevel
-	}
-	log.SetLevel(level)
-	if len(logFile) <= 0 {
-		log.SetOutput(os.Stdout)
+func initLog(logFile string, logLevel string, logFormat string, logSize int, backups int) {
+	var logEncoder zapcore.Encoder
+	if strings.ToLower(logFormat) == "json" {
+		logEncoder = zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
 	} else {
-		log.SetFormatter(&log.TextFormatter{DisableColors: true,
-			FullTimestamp: true,
-			ForceQuote:    false,
-			DisableQuote:  isQuoteDisabled()})
-		log.SetOutput(&lumberjack.Logger{Filename: logFile,
+		logEncoder = zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig())
+	}
+	level := zapcore.DebugLevel
+	level.Set(logLevel)
+	highPriority := zap.LevelEnablerFunc(func(lvl zapcore.Level) bool {
+		return lvl >= level
+	})
+
+	var out io.Writer = os.Stdout
+	if len(logFile) > 0 {
+		out = &lumberjack.Logger{Filename: logFile,
 			LocalTime:  true,
 			MaxSize:    logSize,
-			MaxBackups: backups})
+			MaxBackups: backups}
 	}
+
+	core := zapcore.NewCore(logEncoder, zapcore.AddSync(out), highPriority)
+	logger := zap.New(core)
+	zap.ReplaceGlobals(logger)
+
 }
 
-func loadConfigFromReader( reader io.Reader )(*ProxiesConfigure, error) {
+func loadConfigFromReader(reader io.Reader) (*ProxiesConfigure, error) {
 	r := &ProxiesConfigure{}
 
-        decoder := yaml.NewDecoder(reader)
-        err := decoder.Decode(r)
+	decoder := yaml.NewDecoder(reader)
+	err := decoder.Decode(r)
 
-        if err != nil {
-                return nil, err
-        }
+	if err != nil {
+		return nil, err
+	}
 
-        return r, nil
+	return r, nil
 
 }
 
@@ -103,7 +95,7 @@ func loadConfig(fileName string) (*ProxiesConfigure, error) {
 	}
 
 	defer f.Close()
-	return loadConfigFromReader( f )
+	return loadConfigFromReader(f)
 
 }
 
@@ -116,13 +108,15 @@ func startProxies(c *cli.Context) error {
 	fileName := c.String("log-file")
 	logSize := c.Int("log-size")
 	backups := c.Int("log-backups")
-	initLog(fileName, strLevel, logSize, backups)
+	logFormat := c.String("log-format")
+	initLog(fileName, strLevel, logFormat, logSize, backups)
+
 	b, _ := yaml.Marshal(config)
-	log.Debug("Success load configuration file:\n", string(b))
+	zap.L().Debug("Success load configuration file", zap.String("config", string(b)))
 	for _, proxy := range config.Proxies {
 		preConfigRoute := createPreConfigRoute(proxy)
 		resolver := createPreConfigHostResolver(config.Hosts, proxy)
-		log.Info("start sip proxy:", proxy.Name)
+		zap.L().Info("start sip proxy", zap.String("name", proxy.Name))
 		err = startProxy(proxy, preConfigRoute, resolver)
 		if err != nil {
 			return err
@@ -147,16 +141,16 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 			proxy,
 			selfLearnRoute)
 		if err != nil {
-			log.Error("Fail to start proxy with error:", err)
+			zap.L().Error("Fail to start proxy with error", zap.String("error", err.Error()))
 			return err
 		}
 		proxy.AddItem(item)
 	}
 	err := proxy.Start()
 	if err == nil {
-		log.WithFields(log.Fields{"name": config.Name}).Info("Succeed to start proxy")
+		zap.L().Info("Succeed to start proxy", zap.String("name", config.Name))
 	} else {
-		log.WithFields(log.Fields{"name": config.Name}).Error("Fail to start proxy")
+		zap.L().Error("Fail to start proxy", zap.String("name", config.Name))
 	}
 	return err
 }
@@ -211,11 +205,16 @@ func main() {
 				Usage: "number of log rotate files",
 				Value: 10,
 			},
+			&cli.StringFlag{
+				Name:  "log-format",
+				Usage: "musr be one of: json, text",
+				Value: "text",
+			},
 		},
 		Action: startProxies,
 	}
 	err := app.Run(os.Args)
 	if err != nil {
-		log.WithFields(log.Fields{"error": err}).Error("Fail to start application")
+		zap.L().Error("Fail to start application", zap.String("error", err.Error()))
 	}
 }

@@ -1,7 +1,7 @@
 package main
 
 import (
-	log "github.com/sirupsen/logrus"
+	"go.uber.org/zap"
 )
 
 type SelfLearnRoute struct {
@@ -18,7 +18,7 @@ func (sl *SelfLearnRoute) AddRoute(ip string, transport ServerTransport) {
 	if ok && sl.isSameTransport(old, transport) {
 		return
 	}
-	log.WithFields(log.Fields{"protocol": transport.GetProtocol(), "addr": transport.GetAddress(), "port": transport.GetPort()}).Info("Add route for ", ip)
+	zap.L().Info("Add route for ip", zap.String("ip", ip), zap.String("protocol", transport.GetProtocol()), zap.String("addr", transport.GetAddress()), zap.Int("port", transport.GetPort()))
 	sl.route[ip] = transport
 }
 
@@ -31,7 +31,7 @@ func (sl *SelfLearnRoute) isSameTransport(transport1 ServerTransport, transport2
 func (sl *SelfLearnRoute) GetRoute(ip string) (ServerTransport, bool) {
 	transport, ok := sl.route[ip]
 	if ok {
-		log.WithFields(log.Fields{"protocol": transport.GetProtocol(), "addr": transport.GetAddress(), "port": transport.GetPort()}).Info("Succeed to get route for ", ip)
+		zap.L().Info("Succeed to get route for ip", zap.String("ip", ip), zap.String("protocol", transport.GetProtocol()), zap.String("addr", transport.GetAddress()), zap.Int("port", transport.GetPort()))
 	}
 	return transport, ok
 }
