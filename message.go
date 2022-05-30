@@ -682,8 +682,14 @@ func (m *Message) GetDialog() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	from_addr_s := from_addr.String()
-	to_addr_s := to_addr.String()
+	from_addr_s, err := m.getDialogAddr(from_addr)
+	if err != nil {
+		return "", err
+	}
+	to_addr_s, err := m.getDialogAddr(to_addr)
+	if err != nil {
+		return "", err
+	}
 	if from_addr_s < to_addr_s {
 		return NewDialog(callId,
 			fmt.Sprintf("%s-%s", from_tag, from_addr_s),
@@ -696,6 +702,17 @@ func (m *Message) GetDialog() (string, error) {
 	}
 }
 
+func (m *Message) getDialogAddr(addr *AddrSpec) (string, error) {
+	if addr.IsSIPURI() {
+		sip_uri, err := addr.GetSIPURI()
+		if err != nil {
+			return "", err
+		}
+		return sip_uri.ToString(false, false), nil
+	} else {
+		return addr.String(), nil
+	}
+}
 func (m *Message) GetTopViaBranch() (string, error) {
 	// Get the Branch
 	via, err := m.GetVia()

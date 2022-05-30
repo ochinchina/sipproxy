@@ -164,7 +164,12 @@ func (s *SIPURI) String() string {
 	s.Write(buf)
 	return buf.String()
 }
+
 func (s *SIPURI) Write(writer io.Writer) (int, error) {
+	return s._Write(writer, true, true)
+}
+
+func (s *SIPURI) _Write(writer io.Writer, withParams bool, withHeaders bool) (int, error) {
 	n, _ := fmt.Fprintf(writer, "%s:", s.Scheme)
 	// print userinfo
 	if len(s.User) > 0 {
@@ -184,31 +189,43 @@ func (s *SIPURI) Write(writer io.Writer) (int, error) {
 		m, _ := fmt.Fprintf(writer, "%s", s.Host)
 		n += m
 	}
+
 	//uri-parametres
-	for _, param := range s.Parameters {
-		m, _ := fmt.Fprintf(writer, ";")
-		n += m
-		if len(param.Value) > 0 {
-			m, _ = fmt.Fprintf(writer, "%s=%s", param.Key, param.Value)
-		} else {
-			m, _ = fmt.Fprintf(writer, "%s", param.Key)
+	if withParams {
+		for _, param := range s.Parameters {
+			m, _ := fmt.Fprintf(writer, ";")
+			n += m
+			if len(param.Value) > 0 {
+				m, _ = fmt.Fprintf(writer, "%s=%s", param.Key, param.Value)
+			} else {
+				m, _ = fmt.Fprintf(writer, "%s", param.Key)
+			}
+			n += m
 		}
-		n += m
 	}
+
 	//headers
-	for i, header := range s.Headers {
-		if i == 0 {
-			m, _ := fmt.Fprintf(writer, "%s", "?")
+	if withHeaders {
+		for i, header := range s.Headers {
+			if i == 0 {
+				m, _ := fmt.Fprintf(writer, "%s", "?")
+				n += m
+			} else {
+				m, _ := fmt.Fprintf(writer, "%s", "&")
+				n += m
+			}
+			m, err := fmt.Fprintf(writer, "%s=%s", header.Key, header.Value)
 			n += m
-		} else {
-			m, _ := fmt.Fprintf(writer, "%s", "&")
-			n += m
-		}
-		m, err := fmt.Fprintf(writer, "%s=%s", header.Key, header.Value)
-		n += m
-		if err != nil {
-			return n, err
+			if err != nil {
+				return n, err
+			}
 		}
 	}
 	return n, nil
+}
+
+func (s *SIPURI) ToString(withParams bool, withHeaders bool) string {
+	writer := bytes.NewBuffer(make([]byte, 0))
+	s._Write(writer, withParams, withHeaders)
+	return writer.String()
 }
