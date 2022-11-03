@@ -32,3 +32,30 @@ func TestParseFromSpecWithoutDisplayName(t *testing.T) {
 	}
 	fmt.Printf("%s\n", fromSpec.String())
 }
+
+func TestParseFromSepcWithTel(t *testing.T) {
+	s := "<tel:+5521967014706;phone-context=ims.mnc010.mcc724.3gppnetwork.org>;tag=rnxyur0z"
+
+	fromSpec, err := ParseFromSpec(s)
+
+	if err != nil {
+		t.Errorf("fail to parse From: %s", s)
+	}
+	if tag, err := fromSpec.GetTag(); err != nil || tag != "rnxyur0z" {
+		t.Errorf("Fail to get the tag in header From: %s", s)
+	}
+}
+
+func TestParseFromSepcWithTelWithoutTag(t *testing.T) {
+	s := "Test <tel:+5521967014706;phone-context=ims.mnc010.mcc724.3gppnetwork.org>"
+
+	fromSpec, err := ParseFromSpec(s)
+
+	if err != nil {
+		t.Errorf("fail to parse From: %s", s)
+	}
+	fmt.Println(fromSpec)
+	if _, err := fromSpec.GetTag(); err == nil {
+		t.Errorf("There should be no tag in header From: %s", s)
+	}
+}

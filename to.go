@@ -18,28 +18,51 @@ func ParseTo(s string) (*To, error) {
 		addrSpec: nil,
 		params:   make([]KeyValue, 0)}
 
-	for index, value := range strings.Split(s, ";") {
-		if index == 0 {
-			if strings.Index(value, "<") != -1 {
-				nameAddr, err := ParseNameAddr(value)
-				if err != nil {
-					return nil, err
-				}
-				r.nameAddr = nameAddr
-			} else {
-				addrSpec, err := ParseAddrSpec(value)
-				if err != nil {
-					return nil, err
-				}
-				r.addrSpec = addrSpec
-			}
-		} else {
-			kv, err := ParseGenericParam(value)
+	laquot_pos := strings.Index(s, "<")
+	raquot_pos := -1
+	if laquot_pos != -1 {
+		raquot_pos = strings.Index(s, ">")
+		if raquot_pos == -1 || raquot_pos < laquot_pos {
+			return nil, errors.New("Malformatted header To")
+		}
+	}
+
+	params := ""
+	var err error = nil
+	if raquot_pos != -1 {
+		r.nameAddr, err = ParseNameAddr(s[0 : raquot_pos+1])
+		if err != nil {
+			return nil, err
+		}
+		pos := strings.IndexByte(s[raquot_pos+1:], ';')
+		if pos != -1 {
+			params = s[raquot_pos+1+pos+1:]
+		}
+	} else {
+		pos := strings.IndexByte(s, ';')
+		if pos == -1 {
+			r.addrSpec, err = ParseAddrSpec(s)
 			if err != nil {
 				return nil, err
 			}
-			r.params = append(r.params, kv)
+		} else {
+			r.addrSpec, err = ParseAddrSpec(s[0 : pos+1])
+			if err != nil {
+				return nil, err
+			}
+			params = s[pos+1:]
 		}
+	}
+
+	if len(params) == 0 {
+		return r, nil
+	}
+	for _, value := range strings.Split(params, ";") {
+		kv, err := ParseGenericParam(value)
+		if err != nil {
+			return nil, err
+		}
+		r.params = append(r.params, kv)
 	}
 	return r, nil
 }

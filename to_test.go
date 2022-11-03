@@ -27,3 +27,16 @@ func TestParseToHeaderWithAbsoluteURI(t *testing.T) {
 		t.Fail()
 	}
 }
+
+func TestParseToHeaderWithTel(t *testing.T) {
+	s := "<tel:190;phone-context=ims.mnc010.mcc724.3gppnetwork.org>;tag=LRF_eb0d2505"
+	to, err := ParseTo(s)
+	if err != nil {
+		t.Errorf("Fail to parse header To: %s with error:%v", s, err)
+	}
+
+	if tag, err := to.GetTag(); err != nil || tag != "LRF_eb0d2505" {
+		t.Errorf("Fail to get the tag from To: %s", s)
+	}
+	fmt.Println(to)
+}
