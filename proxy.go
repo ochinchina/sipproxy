@@ -473,12 +473,10 @@ func (p *Proxy) getNextRequestHop(msg *Message) (host string, port int, transpor
 func (p *Proxy) getNextRequestHopByConfig(msg *Message) (host string, port int, transport string, err error) {
 	to, err := msg.GetTo()
 	if err != nil {
-		zap.L().Warn("Fail to find the header To in message", zap.String("message", msg.String()))
 		return "", 0, "", fmt.Errorf("No To header in message")
 	}
 	destHost, err := to.GetHost()
 	if err != nil {
-		zap.L().Warn("Fail to find the Host in header To of message", zap.String("message", msg.String()))
 		return "", 0, "", fmt.Errorf("Fail to find Host in To header of message")
 	}
 	transport, host, port, err = p.preConfigRoute.FindRoute(destHost)

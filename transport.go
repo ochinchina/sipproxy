@@ -169,7 +169,7 @@ func (u *UDPClientTransport) Send(msg *Message) error {
 	}
 	n, err := u.conn.WriteToUDP(b, u.remoteAddr)
 	if err == nil {
-		zap.L().Info("Succeed to send message", zap.Int("length", n), zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()))
+		zap.L().Info("Succeed to send message", zap.Int("length", n), zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", u.remoteAddr.String()))
 	} else {
 		zap.L().Error("Fail to send message", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()), zap.String("error", err.Error()))
 	}
