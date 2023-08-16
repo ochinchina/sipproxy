@@ -285,8 +285,8 @@ func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLear
 	return &UDPServerTransport{localAddr: localAddr,
 		receivedSupport: receivedSupport,
 		msgHandler:      nil,
-		msgParseChannel: make(chan SizedByteArray, 4096),
-		msgBufPool:      NewByteArrayPool(4096, 64*1024),
+		msgParseChannel: make(chan SizedByteArray, 40960),
+		msgBufPool:      NewByteArrayPool(40960, 64*1024),
 		selfLearnRoute:  selfLearnRoute}, nil
 }
 

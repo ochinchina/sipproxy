@@ -367,12 +367,14 @@ type ExpireBackend struct {
 type DialogBasedBackend struct {
 	timeout time.Duration
 	// map between dialog and the backend
-	backends map[string]*ExpireBackend
+	backends      map[string]*ExpireBackend
+	nextCleanTime time.Time
 }
 
 func NewDialogBasedBackend(timeoutSeconds int64) *DialogBasedBackend {
 	return &DialogBasedBackend{timeout: time.Duration(timeoutSeconds) * time.Second,
-		backends: make(map[string]*ExpireBackend)}
+		backends:      make(map[string]*ExpireBackend),
+		nextCleanTime: time.Now().Add(time.Duration(timeoutSeconds) * time.Second)}
 }
 
 func (dbb *DialogBasedBackend) GetBackend(dialog string) (Backend, error) {
@@ -389,7 +391,10 @@ func (dbb *DialogBasedBackend) GetBackend(dialog string) (Backend, error) {
 func (dbb *DialogBasedBackend) AddBackend(dialog string, backend Backend) {
 	expire := time.Now().Add(dbb.timeout)
 	dbb.backends[dialog] = &ExpireBackend{backend: backend, expire: expire}
-	dbb.cleanExpiredDialog()
+	if dbb.nextCleanTime.Before(time.Now()) {
+		dbb.nextCleanTime = expire
+		dbb.cleanExpiredDialog()
+	}
 }
 
 func (dbb *DialogBasedBackend) RemoveDialog(dialog string) {

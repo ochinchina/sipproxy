@@ -206,3 +206,28 @@ func TestDialog(t *testing.T) {
 	}
 	fmt.Printf("dialog is %s\n", dialog_1)
 }
+
+func TestDialogPerf(t *testing.T) {
+	s1 := "SIP/2.0 300 Multiple choices\r\nCSeq: 1 INVITE\r\nCall-ID: ecscfyq63hk3hsrrs0aq0rnvray0k6h6uvanq@10.8.136.47\r\nFrom: <tel:+5521967014706>;tag=rnxyur0z\r\nTo: <tel:190;phone-context=ims.mnc010.mcc724.3gppnetwork.org>;tag=LRF_eb0d2505\r\nVia: SIP/2.0/UDP 10.8.136.164:5060;branch=z9hG4bKede0rcb2ooxho2oiieel0l2db;role=3;hpt=92e2_16;srti=s5_5\r\nRecord-Route: <sip:192.168.200.2:5060;lr>,<sip:10.8.136.164:5060;transport=udp;lr;Hpt=nw_5cd_63620067_407f5c2_ex_92e2_16;CxtId=4;TRC=ffffffff-ffffffff;srti=s5_5;X-HwB2bUaCookie=16594>\r\nContact: <sip:EEE21558000216503@vivo.com;user=phone?P-Asserted-Identity=sip:+EEE21558000216503%3Bcpc%3Demergency%3Buser%3Dphone>\r\nP-Charging-Vector: icid-value=\"rj-bar-pcscf01.19c.6c68.20221102083015\";orig-ioi=\"type 3spo-mb-scscf01.ims.mnc010.mcc724.3gppnetwork.org\u0002\";term-ioi=e-ioi3\r\nExpires: 7200\r\nContent-Length: 0\r\n\r\n"
+	s2 := "ACK tel:190;phone-context=ims.mnc010.mcc724.3gppnetwork.org SIP/2.0\r\nVia: SIP/2.0/UDP 10.8.136.164:5060;branch=z9hG4bKede0rcb2ooxho2oiieel0l2db;Role=3;Hpt=92e2_16;srti=s5_5\r\nCall-ID: ecscfyq63hk3hsrrs0aq0rnvray0k6h6uvanq@10.8.136.47\r\nFrom: <tel:+5521967014706>;tag=rnxyur0z\r\nTo: <tel:190;phone-context=ims.mnc010.mcc724.3gppnetwork.org>;tag=LRF_eb0d2505\r\nCSeq: 1 ACK\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n"
+	fmt.Printf("%s", s1)
+	fmt.Printf("%s", s2)
+	for i := 0; i < 1000000; i++ {
+		msg1, err1 := ParseMessage(create_reader_from_string(s1))
+		msg2, err2 := ParseMessage(create_reader_from_string(s2))
+		if err1 != nil {
+			t.Errorf("fail to create message from %s", s1)
+		}
+
+		if err2 != nil {
+			t.Errorf("fail to create message from %s", s2)
+		}
+
+		dialog_1, _ := msg1.GetDialog()
+		dialog_2, _ := msg2.GetDialog()
+
+		if len(dialog_1) <= 0 || dialog_1 != dialog_2 {
+			t.Errorf("dialog is different")
+		}
+	}
+}

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"gopkg.in/yaml.v3"
 	"io"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strings"
 	"time"
@@ -74,6 +77,13 @@ func initLog(logFile string, logLevel string, logFormat string, logSize int, bac
 
 }
 
+func startProfiling(port int) {
+	if port > 0 {
+		go http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
+
+	}
+}
+
 func loadConfigFromReader(reader io.Reader) (*ProxiesConfigure, error) {
 	r := &ProxiesConfigure{}
 
@@ -109,7 +119,9 @@ func startProxies(c *cli.Context) error {
 	logSize := c.Int("log-size")
 	backups := c.Int("log-backups")
 	logFormat := c.String("log-format")
+	profilingPort := c.Int("profiling-port")
 	initLog(fileName, strLevel, logFormat, logSize, backups)
+	startProfiling(profilingPort)
 
 	b, _ := yaml.Marshal(config)
 	zap.L().Debug("Success load configuration file", zap.String("config", string(b)))
@@ -207,8 +219,13 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:  "log-format",
-				Usage: "musr be one of: json, text",
+				Usage: "must be one of: json, text",
 				Value: "text",
+			},
+			&cli.IntFlag{
+				Name:  "profiling-port",
+				Usage: "the profiling port number",
+				Value: 0,
 			},
 		},
 		Action: startProxies,
