@@ -372,6 +372,8 @@ type DialogBasedBackend struct {
 }
 
 func NewDialogBasedBackend(timeoutSeconds int64) *DialogBasedBackend {
+	zap.L().Info("set the dialog timeout ", zap.Int64("timeout", timeoutSeconds))
+
 	return &DialogBasedBackend{timeout: time.Duration(timeoutSeconds) * time.Second,
 		backends:      make(map[string]*ExpireBackend),
 		nextCleanTime: time.Now().Add(time.Duration(timeoutSeconds) * time.Second)}
@@ -388,8 +390,12 @@ func (dbb *DialogBasedBackend) GetBackend(dialog string) (Backend, error) {
 
 }
 
-func (dbb *DialogBasedBackend) AddBackend(dialog string, backend Backend) {
-	expire := time.Now().Add(dbb.timeout)
+func (dbb *DialogBasedBackend) AddBackend(dialog string, backend Backend, expireSeconds int) {
+	timeout := dbb.timeout
+	if float64(expireSeconds) > timeout.Seconds() {
+		timeout = time.Duration(expireSeconds) * time.Second
+	}
+	expire := time.Now().Add(timeout)
 	dbb.backends[dialog] = &ExpireBackend{backend: backend, expire: expire}
 	if dbb.nextCleanTime.Before(time.Now()) {
 		dbb.nextCleanTime = expire

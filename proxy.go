@@ -129,6 +129,7 @@ type Proxy struct {
 }
 
 func NewProxy(name string,
+	dialogExpire int64,
 	preConfigRoute *PreConfigRoute,
 	resolver *PreConfigHostResolver,
 	selfLearnRoute *SelfLearnRoute) *Proxy {
@@ -142,7 +143,7 @@ func NewProxy(name string,
 		backendChangeChannel: make(chan *BackendChangeEvent, 1000),
 		connAcceptedChannel:  make(chan net.Conn),
 		backends:             make(map[string]*BackendWithParent),
-		dialogBasedBackends:  NewDialogBasedBackend(600)}
+		dialogBasedBackends:  NewDialogBasedBackend(dialogExpire)}
 	go proxy.receiveAndProcessMessage()
 	return proxy
 }
@@ -275,7 +276,7 @@ func (p *Proxy) handleDialog(peerAddr string, peerPort int, msg *Message) {
 			dialog, _ := msg.GetDialog()
 			if dialog != "" {
 				zap.L().Info("dialog is bind to backend", zap.String("backendAddr", addr), zap.String("dialog", dialog))
-				p.dialogBasedBackends.AddBackend(dialog, backend)
+				p.dialogBasedBackends.AddBackend(dialog, backend, msg.GetExpires(0))
 			}
 		case "BYE":
 			dialog, _ := msg.GetDialog()
@@ -319,7 +320,7 @@ func (p *Proxy) HandleMessage(msg *Message) {
 				if dialog, err := msg.GetDialog(); err == nil {
 					zap.L().Info("bind the dialog to the response", zap.String("dialog", dialog), zap.String("backend", backendWithParent.backend.GetAddress()))
 
-					p.dialogBasedBackends.AddBackend(dialog, backendWithParent.backend)
+					p.dialogBasedBackends.AddBackend(dialog, backendWithParent.backend, msg.GetExpires(0))
 				}
 			}
 		}
@@ -387,7 +388,7 @@ func (p *Proxy) sendToBackend(msg *Message) {
 			transId, err := msg.GetClientTransaction()
 			if err == nil {
 				zap.L().Debug("bind client transaction with backend", zap.String("trandId", transId), zap.String("backend", backend.GetAddress()))
-				p.dialogBasedBackends.AddBackend(transId, backend)
+				p.dialogBasedBackends.AddBackend(transId, backend, msg.GetExpires(0))
 			}
 		}
 	}

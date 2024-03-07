@@ -588,7 +588,6 @@ func (m *Message) IsResponse() bool {
 	return m.response != nil
 }
 
-//
 // All 2xx, 3xx, 4xx, 5xx and 6xx responses are final.
 func (m *Message) IsFinalResponse() bool {
 	if m.response == nil {
@@ -793,4 +792,13 @@ func (m *Message) GetServerTransaction() (string, error) {
 	}
 
 	return fmt.Sprintf("%s-%s-%s", m.request.method, sentBy, branch), nil
+}
+
+// Get the value of Expires
+func (m *Message) GetExpires(defValue int) int {
+	expires, err := m.GetHeaderInt("Expires")
+	if err == nil {
+		return expires
+	}
+	return defValue
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -21,8 +22,9 @@ type HostIp struct {
 }
 
 type ProxyConfig struct {
-	Name    string
-	Listens []struct {
+	Name          string
+	DialogTimeout int `yaml:"dialogTimeout,omitempty"`
+	Listens       []struct {
 		Address    string
 		UDPPort    int      `yaml:"udp-port,omitempty"`
 		TCPPort    int      `yaml:"tcp-port,omitempty"`
@@ -139,9 +141,24 @@ func startProxies(c *cli.Context) error {
 	}
 }
 
+func getDefaultDialogTimeout() int {
+	expire, ok := os.LookupEnv("DEFAULT_DIALOG_TIMEOUT")
+	if !ok {
+		return 1200
+	}
+	if val, err := strconv.Atoi(expire); err == nil {
+		return val
+	}
+	return 1200
+}
+
 func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *PreConfigHostResolver) error {
 	selfLearnRoute := NewSelfLearnRoute()
-	proxy := NewProxy(config.Name, preConfigRoute, resolver, selfLearnRoute)
+	dialogTimeout := config.DialogTimeout
+	if dialogTimeout <= 0 {
+		dialogTimeout = getDefaultDialogTimeout()
+	}
+	proxy := NewProxy(config.Name, int64(dialogTimeout), preConfigRoute, resolver, selfLearnRoute)
 	for _, listen := range config.Listens {
 		item, err := NewProxyItem(listen.Address,
 			listen.UDPPort,
