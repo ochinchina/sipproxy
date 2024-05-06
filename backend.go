@@ -164,9 +164,9 @@ func (b *UDPBackend) GetAddress() string {
 func (b *UDPBackend) Close() {
 	err := b.udpConn.Close()
 	if err == nil {
-		zap.L().Info("Succeed to close udp backend", zap.String("address", b.udpConn.RemoteAddr().String()))
+		zap.L().Info("Succeed to close udp backend", zap.String("address", b.backendAddr.String() ))
 	} else {
-		zap.L().Error("Fail to close udp backend", zap.String("address", b.udpConn.RemoteAddr().String()))
+		zap.L().Error("Fail to close udp backend", zap.String("address", b.backendAddr.String() ))
 	}
 }
 
