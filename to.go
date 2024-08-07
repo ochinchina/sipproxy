@@ -23,7 +23,7 @@ func ParseTo(s string) (*To, error) {
 	if laquot_pos != -1 {
 		raquot_pos = strings.Index(s, ">")
 		if raquot_pos == -1 || raquot_pos < laquot_pos {
-			return nil, errors.New("Malformatted header To")
+			return nil, errors.New("malformatted header To")
 		}
 	}
 
@@ -88,17 +88,17 @@ func (t *To) GetParam(name string) (string, error) {
 			return param.Value, nil
 		}
 	}
-	return "", fmt.Errorf("No such param %s", name)
+	return "", fmt.Errorf("no such param %s", name)
 }
 
 func (t *To) GetTag() (string, error) {
 	return t.GetParam("tag")
 }
 
-func (t *To) AddParam(name, value string) {
-	for _, param := range t.params {
+func (t *To) AddParam(name string, value string) {
+	for i, param := range t.params {
 		if param.Key == name {
-			param.Value = value
+			t.params[i].Value = value
 			return
 		}
 	}

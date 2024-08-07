@@ -5,10 +5,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"go.uber.org/zap"
 	"io"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 type RequestLine struct {
@@ -162,7 +163,7 @@ func parseRequestLine(line string) (*RequestLine, error) {
 		}
 		return &RequestLine{method: fields[0], requestURI: requestURI, version: fields[2]}, nil
 	} else {
-		return nil, errors.New("Not a valid sip request")
+		return nil, errors.New("not a valid sip request")
 	}
 }
 
@@ -175,7 +176,7 @@ func parseStatusLine(line string) (*StatusLine, error) {
 		}
 		return &StatusLine{version: fields[0], statusCode: statusCode, reason: strings.Join(fields[2:], " ")}, nil
 	} else {
-		return nil, errors.New("Not a valid sip response")
+		return nil, errors.New("not a valid sip response")
 	}
 }
 
@@ -211,7 +212,7 @@ func ParseMessage(reader *bufio.Reader) (*Message, error) {
 		} else {
 			pos := strings.IndexByte(line, ':')
 			if pos == -1 {
-				return nil, errors.New("Not a valid sip request")
+				return nil, errors.New("not a valid sip request")
 			}
 			name := line[0:pos]
 			value := strings.TrimSpace(line[pos+1:])
@@ -223,7 +224,7 @@ func ParseMessage(reader *bufio.Reader) (*Message, error) {
 		return nil, err
 	}
 	if contentLength < 0 {
-		return nil, errors.New("Invalid negative Content-Length field")
+		return nil, errors.New("invalid negative Content-Length field")
 	}
 	msg.body = make([]byte, contentLength)
 	if _, err = io.ReadFull(reader, msg.body); err != nil {
@@ -251,7 +252,7 @@ func (m *Message) GetHeader(name string) (*Header, error) {
 			return header, nil
 		}
 	}
-	return nil, fmt.Errorf("No such header %s", name)
+	return nil, fmt.Errorf("no such header %s", name)
 }
 
 func (m *Message) findHeaderPos(name string) (int, error) {
@@ -260,7 +261,7 @@ func (m *Message) findHeaderPos(name string) (int, error) {
 			return index, nil
 		}
 	}
-	return 0, fmt.Errorf("No such header %s", name)
+	return 0, fmt.Errorf("no such header %s", name)
 
 }
 
@@ -294,7 +295,7 @@ func (m *Message) RemoveHeader(name string) (interface{}, error) {
 			return header.value, nil
 		}
 	}
-	return "", fmt.Errorf("No such header %s", name)
+	return "", fmt.Errorf("no such header %s", name)
 }
 
 func (m *Message) GetFrom() (*FromSpec, error) {
@@ -408,7 +409,7 @@ func (m *Message) GetVia() (*Via, error) {
 		return v, nil
 
 	}
-	return nil, errors.New("The header value type is not string or Via")
+	return nil, errors.New("the header value type is not string or Via")
 }
 
 func (m *Message) GetCSeq() (*CSeq, error) {
@@ -429,7 +430,7 @@ func (m *Message) GetCSeq() (*CSeq, error) {
 		return v, nil
 
 	}
-	return nil, errors.New("The header value type is not string or CSeq")
+	return nil, errors.New("the header value type is not string or CSeq")
 }
 
 // PopVia remove first via
@@ -579,7 +580,7 @@ func (m *Message) GetMethod() (string, error) {
 
 func (m *Message) GetRequestURI() (*AddrSpec, error) {
 	if m.request == nil {
-		return nil, errors.New("Not a request")
+		return nil, errors.New("not a request")
 	}
 	return m.request.requestURI, nil
 }
@@ -628,8 +629,9 @@ func (m *Message) TryRemoveTopRoute(myAddr string, myPort int) error {
 	if err == nil && sipUri.Host == myAddr && sipUri.GetPort() == myPort {
 		zap.L().Info("remove top route item because the top item is my address", zap.String("route-param", routeParam.String()))
 		m.PopRoute()
+		return nil
 	}
-	return nil
+	return fmt.Errorf("the top route item is not my address")
 }
 
 // Get the Call-ID header
@@ -737,7 +739,7 @@ func (m *Message) GetTopViaSentBy() (string, error) {
 		return "", err
 	}
 	if via.Size() <= 0 {
-		return "", fmt.Errorf("No Via header is available")
+		return "", fmt.Errorf("no Via header is available")
 	}
 
 	param, err := via.GetParam(0)
@@ -769,13 +771,13 @@ func (m *Message) GetClientTransaction() (string, error) {
 
 func (m *Message) GetServerTransaction() (string, error) {
 	if m.IsResponse() {
-		return "", fmt.Errorf("No server transaction for response")
+		return "", fmt.Errorf("no server transaction for response")
 	}
 	// the method of the request matches the one that created the
 	// transaction, except for ACK, where the method of the request
 	// that created the transaction is INVITE.
 	if m.request.method == "ACK" {
-		return "", errors.New("No server transaction for ACK")
+		return "", errors.New("no server transaction for ACK")
 	}
 
 	// Get the top Via Branch

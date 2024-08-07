@@ -77,7 +77,7 @@ func (r *Route) PopRouteParam() (*RouteParam, error) {
 		r.routeParams = r.routeParams[1:]
 		return routeParam, nil
 	}
-	return nil, errors.New("No route-param")
+	return nil, errors.New("no route-param")
 }
 
 func (r *Route) GetRouteParamCount() int {

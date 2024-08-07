@@ -7,7 +7,7 @@ import (
 
 func ParseGenericParam(s string) (KeyValue, error) {
 	if len(s) <= 0 {
-		return KeyValue{Key: "", Value: ""}, errors.New("Invalid generic-param syntax")
+		return KeyValue{Key: "", Value: ""}, errors.New("invalid generic-param syntax")
 	}
 	pos := strings.IndexByte(s, '=')
 	if pos == -1 {

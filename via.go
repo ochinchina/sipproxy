@@ -31,7 +31,7 @@ func (v *Via) AddViaParam(viaParam *ViaParam) {
 
 func (v *Via) PopViaParam() (*ViaParam, error) {
 	if len(v.params) <= 0 {
-		return nil, errors.New("No via-param")
+		return nil, errors.New("no via-param")
 	}
 	r := v.params[0]
 	v.params = v.params[1:]
@@ -77,7 +77,7 @@ func (vp *ViaParam) GetParam(name string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("No such param %s", name)
+	return "", fmt.Errorf("no such param %s", name)
 }
 
 func (vp *ViaParam) HasParam(name string) bool {
@@ -172,16 +172,16 @@ func parseViaParam(viaParam string) (*ViaParam, error) {
 	sentInfo := strings.Fields(t[0])
 
 	if len(sentInfo) != 2 {
-		return nil, errors.New("Malformatted Via header")
+		return nil, errors.New("malformatted Via header")
 	}
 	sentProtocol := strings.Split(sentInfo[0], "/")
 	if len(sentProtocol) != 3 {
-		return nil, errors.New("Malformatted sent-protocol")
+		return nil, errors.New("malformatted sent-protocol")
 	}
 	sentBy := strings.Split(sentInfo[1], ":")
 
 	if len(sentBy) > 2 {
-		return nil, errors.New("Malformatted sent-by")
+		return nil, errors.New("malformatted sent-by")
 	}
 
 	via := &ViaParam{ProtocolName: sentProtocol[0], ProtocolVersion: sentProtocol[1], Transport: sentProtocol[2], Host: sentBy[0]}

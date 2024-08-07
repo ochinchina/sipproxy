@@ -3,12 +3,13 @@ package main
 import (
 	"errors"
 	"fmt"
-	"go.uber.org/zap"
 	"net"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type BackendChangeListener interface {
@@ -61,7 +62,7 @@ type RoundRobinBackend struct {
 	backends                 []Backend
 	backendMap               map[string]Backend
 	backendChangeListenerMgr *BackendChangeListenerMgr
-	dialogBasedBackend       *DialogBasedBackend
+	//dialogBasedBackend       *DialogBasedBackend
 }
 
 type UDPBackend struct {
@@ -83,7 +84,7 @@ func init() {
 
 func CreateRoundRobinBackend(localhostport string, addresses []string) (*RoundRobinBackend, error) {
 	if len(addresses) <= 0 {
-		return nil, fmt.Errorf("No address")
+		return nil, fmt.Errorf("no address")
 	}
 	rrBackend := NewRoundRobinBackend()
 	for _, address := range addresses {
@@ -116,7 +117,7 @@ func CreateRoundRobinBackend(localhostport string, addresses []string) (*RoundRo
 				}
 			}
 		} else {
-			return nil, fmt.Errorf("Unsupported protocol %s", u.Scheme)
+			return nil, fmt.Errorf("unsupported protocol %s", u.Scheme)
 		}
 	}
 	return rrBackend, nil
@@ -164,9 +165,9 @@ func (b *UDPBackend) GetAddress() string {
 func (b *UDPBackend) Close() {
 	err := b.udpConn.Close()
 	if err == nil {
-		zap.L().Info("Succeed to close udp backend", zap.String("address", b.backendAddr.String() ))
+		zap.L().Info("Succeed to close udp backend", zap.String("address", b.backendAddr.String()))
 	} else {
-		zap.L().Error("Fail to close udp backend", zap.String("address", b.backendAddr.String() ))
+		zap.L().Error("Fail to close udp backend", zap.String("address", b.backendAddr.String()))
 	}
 }
 
@@ -200,7 +201,7 @@ func (t *TCPBackend) Send(msg *Message) error {
 		t.conn.Close()
 		t.conn = nil
 	}
-	return fmt.Errorf("Fail to send message to backend %s", t.backendAddr)
+	return fmt.Errorf("fail to send message to backend %s", t.backendAddr)
 }
 
 func (t *TCPBackend) GetAddress() string {
@@ -236,7 +237,7 @@ func (rb *RoundRobinBackend) GetBackend(address string) (Backend, error) {
 	if v, ok := rb.backendMap[address]; ok {
 		return v, nil
 	}
-	return nil, fmt.Errorf("Fail to find backend by %s", address)
+	return nil, fmt.Errorf("fail to find backend by %s", address)
 }
 
 func (rb *RoundRobinBackend) RemoveBackend(address string) {
@@ -272,7 +273,7 @@ func (rb *RoundRobinBackend) Send(msg *Message) error {
 	index, err := rb.getNextBackendIndex()
 	if err != nil {
 		zap.L().Error("Fail to send message", zap.String("error", err.Error()))
-		return errors.New("Fail to get next backend")
+		return errors.New("fail to get next backend")
 	}
 
 	n := rb.getBackendCount()
@@ -283,7 +284,7 @@ func (rb *RoundRobinBackend) Send(msg *Message) error {
 			return backend.Send(msg)
 		}
 	}
-	return errors.New("Fail to send msg to all the backend")
+	return errors.New("fail to send msg to all the backend")
 }
 
 func (rb *RoundRobinBackend) GetAddress() string {
@@ -295,7 +296,7 @@ func (rb *RoundRobinBackend) getNextBackendIndex() (int, error) {
 	defer rb.Unlock()
 	n := len(rb.backends)
 	if n <= 0 {
-		return 0, fmt.Errorf("No backend available")
+		return 0, fmt.Errorf("no backend available")
 	}
 	rb.index = (rb.index + 1) % n
 	return rb.index, nil
@@ -306,7 +307,7 @@ func (rb *RoundRobinBackend) getBackend(index int) (Backend, error) {
 	defer rb.Unlock()
 	n := len(rb.backends)
 	if n <= 0 {
-		return nil, fmt.Errorf("No backend available at %d", index)
+		return nil, fmt.Errorf("no backend available at %d", index)
 	}
 	return rb.backends[index%n], nil
 }
@@ -386,7 +387,7 @@ func (dbb *DialogBasedBackend) GetBackend(dialog string) (Backend, error) {
 		}
 		delete(dbb.backends, dialog)
 	}
-	return nil, fmt.Errorf("No backend related with dialog %s", dialog)
+	return nil, fmt.Errorf("no backend related with dialog %s", dialog)
 
 }
 
@@ -415,7 +416,7 @@ func (dbb *DialogBasedBackend) cleanExpiredDialog() {
 		}
 	}
 
-	for k, _ := range expiredDialogs {
+	for k := range expiredDialogs {
 		delete(dbb.backends, k)
 	}
 }

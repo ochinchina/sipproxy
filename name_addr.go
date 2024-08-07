@@ -17,7 +17,7 @@ func ParseNameAddr(nameAddr string) (*NameAddr, error) {
 	pos1 := strings.IndexByte(nameAddr, '<')
 	pos2 := strings.IndexByte(nameAddr, '>')
 	if pos1 == -1 || pos2 == -1 || pos2 < pos1 {
-		return nil, errors.New("Malformatted name-addr")
+		return nil, errors.New("malformatted name-addr")
 	}
 
 	addr, err := ParseAddrSpec(nameAddr[pos1+1 : pos2])

@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
-	"go.uber.org/zap"
 	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type PreConfigHostResolver struct {
@@ -37,7 +38,7 @@ func (hr *PreConfigHostResolver) GetIp(name string) (string, error) {
 	if err == nil && len(ips) > 0 {
 		return ips[0].String(), nil
 	}
-	return "", fmt.Errorf("Fail to find IP of %s", name)
+	return "", fmt.Errorf("fail to find IP of %s", name)
 }
 
 type IPResolvedCallback = func(hostname string, newIPs []string, removedIPs []string)
@@ -83,6 +84,7 @@ func (r *DynamicHostResolver) ResolveHost(addr string, callback IPResolvedCallba
 	}
 }
 
+/*
 func (r *DynamicHostResolver) StopResolve(hostname string) {
 	r.Lock()
 	defer r.Unlock()
@@ -91,7 +93,7 @@ func (r *DynamicHostResolver) StopResolve(hostname string) {
 		delete(r.hostIPs, hostname)
 
 	}
-}
+}*/
 
 func (r *DynamicHostResolver) getHostnames() []string {
 	r.Lock()
@@ -99,7 +101,7 @@ func (r *DynamicHostResolver) getHostnames() []string {
 
 	hostnames := make([]string, 0)
 
-	for hostname, _ := range r.hostIPs {
+	for hostname := range r.hostIPs {
 		hostnames = append(hostnames, hostname)
 	}
 	return hostnames
@@ -179,7 +181,7 @@ func (r *DynamicHostResolver) doResolve(hostname string) ([]string, error) {
 	result := make([]string, 0)
 	for _, ip := range ips {
 		s := ip.String()
-		if strings.Index(s, ":") != -1 {
+		if strings.Contains(s, ":") {
 			s = fmt.Sprintf("[%s]", s)
 		}
 		result = append(result, s)

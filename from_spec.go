@@ -23,7 +23,7 @@ func ParseFromSpec(s string) (*FromSpec, error) {
 	if laquot_pos != -1 {
 		raquot_pos = strings.Index(s, ">")
 		if raquot_pos == -1 || raquot_pos < laquot_pos {
-			return nil, fmt.Errorf("Malformatted header From: %s", s)
+			return nil, fmt.Errorf("malformatted header From: %s", s)
 		}
 	}
 
@@ -73,7 +73,7 @@ func (fs *FromSpec) GetAddrSpec() (*AddrSpec, error) {
 	} else if fs.addrSpec != nil {
 		return fs.addrSpec, nil
 	}
-	return nil, errors.New("No nameSpec and addrSpec")
+	return nil, errors.New("no nameSpec and addrSpec")
 }
 
 func (fs *FromSpec) String() string {
@@ -96,7 +96,7 @@ func (fs *FromSpec) GetParam(name string) (string, error) {
 			return param.Value, nil
 		}
 	}
-	return "", fmt.Errorf("No such param %s", name)
+	return "", fmt.Errorf("no such param %s", name)
 }
 
 func (fs *FromSpec) GetTag() (string, error) {
@@ -104,9 +104,9 @@ func (fs *FromSpec) GetTag() (string, error) {
 }
 
 func (fs *FromSpec) SetTag(tag string) {
-	for _, param := range fs.params {
+	for i, param := range fs.params {
 		if param.Key == "tag" {
-			param.Value = tag
+			fs.params[i].Value = tag
 			return
 		}
 	}

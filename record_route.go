@@ -42,7 +42,7 @@ func ParseRecRoute(s string) (*RecRoute, error) {
 
 	pos := strings.Index(s, ">")
 	if pos == -1 {
-		return nil, errors.New("Invalid syntax of rec-route")
+		return nil, errors.New("invalid syntax of rec-route")
 	}
 	nameAddr, err := ParseNameAddr(s[0 : pos+1])
 	if err != nil {
@@ -55,7 +55,7 @@ func ParseRecRoute(s string) (*RecRoute, error) {
 		return recRoute, nil
 	}
 	if s[0] != ';' {
-		return nil, errors.New("Invalid rec-route syntax")
+		return nil, errors.New("invalid rec-route syntax")
 	}
 	s = s[1:]
 	for _, t := range strings.Split(s, ";") {

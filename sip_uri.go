@@ -29,7 +29,7 @@ func ParseSipURI(uri string) (*SIPURI, error) {
 		sipUri.Scheme = "sips"
 		s = uri[5:]
 	} else {
-		return nil, errors.New("Not a valid sip uri")
+		return nil, errors.New("not a valid sip uri")
 	}
 	// find '?'
 	pos := strings.IndexByte(s, '?')
@@ -82,7 +82,7 @@ func parseUriParameters(s string, sipUri *SIPURI) error {
 			if param == "lr" {
 				sipUri.Parameters = append(sipUri.Parameters, KeyValue{Key: "lr", Value: ""})
 			} else {
-				return errors.New("Invalid parameter format")
+				return errors.New("invalid parameter format")
 			}
 		} else {
 			name := param[0:pos]
@@ -97,7 +97,7 @@ func parseUriHeader(s string, sipUri *SIPURI) error {
 	for _, param := range strings.Split(s, "&") {
 		pos := strings.IndexByte(param, '=')
 		if pos == -1 {
-			return errors.New("Invalid parameter format")
+			return errors.New("invalid parameter format")
 		}
 		name := param[0:pos]
 		value := param[pos+1:]
@@ -113,7 +113,7 @@ func (s *SIPURI) GetParameter(name string) (string, error) {
 			return param.Value, nil
 		}
 	}
-	return "", fmt.Errorf("No such parameter%s", name)
+	return "", fmt.Errorf("no such parameter%s", name)
 }
 
 func (s *SIPURI) AddParameter(name string, value string) {
@@ -121,9 +121,9 @@ func (s *SIPURI) AddParameter(name string, value string) {
 }
 
 func (s *SIPURI) SetParameter(name string, value string) {
-	for _, param := range s.Parameters {
+	for i, param := range s.Parameters {
 		if param.Key == name {
-			param.Value = value
+			s.Parameters[i].Value = value
 			return
 		}
 	}
@@ -156,7 +156,7 @@ func (s *SIPURI) GetHeader(name string) (string, error) {
 			return header.Value, nil
 		}
 	}
-	return "", fmt.Errorf("No such header %s", name)
+	return "", fmt.Errorf("no such header %s", name)
 }
 
 func (s *SIPURI) String() string {

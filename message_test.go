@@ -177,7 +177,7 @@ test`
 	start := time.Now()
 	for i := 0; i < 1000000; i++ {
 		msg, _ := ParseMessage(create_reader_from_string(s))
-		msg.String()
+		_ = msg.String()
 	}
 	end := time.Now()
 	fmt.Printf("Total time:%d\n", end.Sub(start).Milliseconds())

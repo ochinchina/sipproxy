@@ -1,10 +1,10 @@
 package main
 
 import (
-	"errors"
-	"github.com/google/uuid"
 	"net"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 func CreateBranch() (string, error) {
@@ -44,6 +44,7 @@ func strArraySub(a1 []string, a2 []string) []string {
 	return r
 }
 
+/*
 func splitAddr(addr string) (hostname string, port string, err error) {
 	pos := strings.LastIndex(addr, ":")
 	if pos == -1 {
@@ -55,7 +56,7 @@ func splitAddr(addr string) (hostname string, port string, err error) {
 	}
 	return
 
-}
+}*/
 
 func isIPAddress(addr string) bool {
 	if strings.HasPrefix(addr, "[") && strings.HasSuffix(addr, "]") {
@@ -65,5 +66,5 @@ func isIPAddress(addr string) bool {
 }
 
 func isIPv6(ip string) bool {
-	return strings.Index(ip, ":") != -1
+	return strings.Contains(ip, ":")
 }

@@ -2,11 +2,12 @@ package main
 
 import (
 	"fmt"
-	"go.uber.org/zap"
 	"net"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 type BackendChangeEvent struct {
@@ -232,8 +233,55 @@ func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 	// field value.  If it indicates this proxy, the proxy removes it
 	// from the Route header field (this route node has been
 	// reached).
-	msg.TryRemoveTopRoute(rawMessage.From.GetAddress(), rawMessage.From.GetPort())
+
+	p.tryRemoveTopRoute(rawMessage)
 	return msg, nil
+}
+
+func (p *Proxy) tryRemoveTopRoute(rawMessage *RawMessage) {
+	msg := rawMessage.Message
+
+	route, err := msg.GetRoute()
+	if err != nil {
+		return
+	}
+	routeParam, err := route.GetRouteParam(0)
+	if err != nil {
+		return
+	}
+	sipUri, err := routeParam.GetAddress().GetAddress().GetSIPURI()
+
+	if err != nil {
+		return
+	}
+
+	myAddr := rawMessage.From.GetAddress()
+	myPort := rawMessage.From.GetPort()
+
+	if sipUri.GetPort() == myPort && p.isSameAddress(sipUri.Host, myAddr) {
+		zap.L().Info("remove top route item because the top item is my address", zap.String("route-param", routeParam.String()))
+		msg.PopRoute()
+	}
+}
+
+func (p *Proxy) isSameAddress(addr1 string, addr2 string) bool {
+	if addr1 == addr2 {
+		return true
+	}
+
+	ip1, err := p.resolver.GetIp(addr1)
+	if err != nil {
+		return false
+	}
+
+	ip2, err := p.resolver.GetIp(addr2)
+
+	if err != nil {
+		return false
+	}
+
+	return ip1 == ip2
+
 }
 
 func (p *Proxy) getBackendOfResponse(addr string, msg *Message) (Backend, error) {
@@ -299,11 +347,8 @@ func (p *Proxy) HandleMessage(msg *Message) {
 				p.addVia(msg, serverTrans)
 				p.addRecordRoute(msg, serverTrans)
 			}
-			if err != nil {
-				zap.L().Error("Fail to find the next hop for request", zap.String("message", msg.String()))
-			} else {
-				p.sendMessage(host, port, transport, msg)
-			}
+
+			p.sendMessage(host, port, transport, msg)
 		} else if p.myName.isMyMessage(msg) {
 			zap.L().Info("it is my request")
 			p.sendToBackend(msg)
@@ -440,7 +485,7 @@ func (p *Proxy) findTransportByBackendAddr(addr string) (ServerTransport, error)
 			return proxyItem.transports[0], nil
 		}
 	}
-	return nil, fmt.Errorf("Fail to find backend by %s", addr)
+	return nil, fmt.Errorf("fail to find backend by %s", addr)
 
 }
 
@@ -474,11 +519,11 @@ func (p *Proxy) getNextRequestHop(msg *Message) (host string, port int, transpor
 func (p *Proxy) getNextRequestHopByConfig(msg *Message) (host string, port int, transport string, err error) {
 	to, err := msg.GetTo()
 	if err != nil {
-		return "", 0, "", fmt.Errorf("No To header in message")
+		return "", 0, "", fmt.Errorf("no To header in message")
 	}
 	destHost, err := to.GetHost()
 	if err != nil {
-		return "", 0, "", fmt.Errorf("Fail to find Host in To header of message")
+		return "", 0, "", fmt.Errorf("fail to find Host in To header of message")
 	}
 	transport, host, port, err = p.preConfigRoute.FindRoute(destHost)
 	return

@@ -23,7 +23,7 @@ func ParseCSeq(s string) (*CSeq, error) {
 		}
 		return &CSeq{Seq: seq, Method: fields[1]}, nil
 	}
-	return nil, errors.New("Malformatted CSeq header")
+	return nil, errors.New("malformatted CSeq header")
 }
 
 func (cs *CSeq) Write(writer io.Writer) (int, error) {

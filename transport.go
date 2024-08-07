@@ -4,11 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"go.uber.org/zap"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
 // RawMessage raw sip message
@@ -106,7 +107,7 @@ func (fct *FailOverClientTransport) Send(msg *Message) error {
 	if fct.secondary != nil {
 		return fct.secondary.Send(msg)
 	}
-	return fmt.Errorf("Fail to send message")
+	return fmt.Errorf("fail to send message")
 }
 
 func (fct *FailOverClientTransport) IsConnected() bool {
@@ -271,7 +272,7 @@ func (t *TCPClientTransport) Send(msg *Message) error {
 		}
 	}
 	zap.L().Error("Fail to send message to tcp server", zap.String("addr", t.addr))
-	return fmt.Errorf("Fail to send message to %s", t.addr)
+	return fmt.Errorf("fail to send message to %s", t.addr)
 }
 
 func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) (*UDPServerTransport, error) {

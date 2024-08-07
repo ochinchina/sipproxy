@@ -67,7 +67,7 @@ func (pcr *PreConfigRoute) FindRoute(dest string) (protocol string, host string,
 		return item.protocol, item.host, item.port, nil
 	}
 
-	return "", "", 0, fmt.Errorf("Fail to find route for %s", dest)
+	return "", "", 0, fmt.Errorf("fail to find route for %s", dest)
 }
 
 func (pcr *PreConfigRoute) toRegularExp(s string) string {
