@@ -117,6 +117,7 @@ func (p *MyName) isMyMessage(msg *Message) bool {
 
 type Proxy struct {
 	myName               *MyName
+	keepNextHopRoute     bool
 	preConfigRoute       *PreConfigRoute
 	resolver             *PreConfigHostResolver
 	items                []*ProxyItem
@@ -131,10 +132,12 @@ type Proxy struct {
 
 func NewProxy(name string,
 	dialogExpire int64,
+	keepNextHopRoute bool,
 	preConfigRoute *PreConfigRoute,
 	resolver *PreConfigHostResolver,
 	selfLearnRoute *SelfLearnRoute) *Proxy {
 	proxy := &Proxy{myName: NewMyName(name),
+		keepNextHopRoute:     keepNextHopRoute,
 		preConfigRoute:       preConfigRoute,
 		resolver:             resolver,
 		items:                make([]*ProxyItem, 0),
@@ -343,11 +346,11 @@ func (p *Proxy) HandleMessage(msg *Message) {
 		if err == nil {
 			zap.L().Info("Get next hop", zap.String("host", host), zap.Int("port", port), zap.String("transport", transport))
 			serverTrans, ok := p.selfLearnRoute.GetRoute(host)
+
 			if ok {
 				p.addVia(msg, serverTrans)
 				p.addRecordRoute(msg, serverTrans)
 			}
-
 			p.sendMessage(host, port, transport, msg)
 		} else if p.myName.isMyMessage(msg) {
 			zap.L().Info("it is my request")
@@ -539,7 +542,9 @@ func (P *Proxy) getNextRequestHopByRoute(msg *Message) (host string, port int, t
 	if err != nil {
 		return
 	}
-	msg.PopRoute()
+	if !P.keepNextHopRoute {
+		msg.PopRoute()
+	}
 	addr := routeParam.GetAddress().GetAddress()
 	if addr.IsSIPURI() {
 		sipUri, _ := addr.GetSIPURI()

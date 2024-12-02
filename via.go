@@ -61,9 +61,9 @@ func (v *Via) String() string {
 }
 
 func (vp *ViaParam) SetParam(name string, value string) {
-	for _, param := range vp.Params {
+	for key, param := range vp.Params {
 		if param.Key == name {
-			param.Value = value
+			vp.Params[key].Value = value
 			return
 		}
 	}

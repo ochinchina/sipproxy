@@ -2,18 +2,20 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net/http"
+	_ "net/http/pprof"
+	"os"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/urfave/cli/v2"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"gopkg.in/yaml.v3"
-	"io"
-	"net/http"
-	_ "net/http/pprof"
-	"os"
-	"strconv"
-	"strings"
-	"time"
 )
 
 type HostIp struct {
@@ -22,9 +24,10 @@ type HostIp struct {
 }
 
 type ProxyConfig struct {
-	Name          string
-	DialogTimeout int `yaml:"dialogTimeout,omitempty"`
-	Listens       []struct {
+	Name             string
+	DialogTimeout    int    `yaml:"dialogTimeout,omitempty"`
+	KeepNextHopRoute string `yaml:"keepNextHopRoute,omitempty"`
+	Listens          []struct {
 		Address    string
 		UDPPort    int      `yaml:"udp-port,omitempty"`
 		TCPPort    int      `yaml:"tcp-port,omitempty"`
@@ -111,6 +114,16 @@ func loadConfig(fileName string) (*ProxiesConfigure, error) {
 
 }
 
+func toKeepNextHopRoute(s string) bool {
+
+	possibleTrueValues := []string{"true", "yes", "1", "on", "t", "y"}
+
+	if s == "" {
+		s = os.Getenv("KEEP_NEXT_HOP_ROUTE")
+	}
+	return slices.Contains(possibleTrueValues, strings.ToLower(s))
+}
+
 func startProxies(c *cli.Context) error {
 	config, err := loadConfig(c.String("config"))
 	if err != nil {
@@ -158,7 +171,7 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 	if dialogTimeout <= 0 {
 		dialogTimeout = getDefaultDialogTimeout()
 	}
-	proxy := NewProxy(config.Name, int64(dialogTimeout), preConfigRoute, resolver, selfLearnRoute)
+	proxy := NewProxy(config.Name, int64(dialogTimeout), toKeepNextHopRoute(config.KeepNextHopRoute), preConfigRoute, resolver, selfLearnRoute)
 	for _, listen := range config.Listens {
 		item, err := NewProxyItem(listen.Address,
 			listen.UDPPort,
