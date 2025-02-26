@@ -71,10 +71,13 @@ type UDPBackend struct {
 }
 
 type TCPBackend struct {
-	localAddr   string
-	backendAddr string
-	conn        net.Conn
+	localAddr             string
+	backendAddr           string
+	conn                  net.Conn
+	connectionEstablished ConnectionEstablished
 }
+
+type ConnectionEstablished func(conn net.Conn)
 
 var dynamicHostResolver *DynamicHostResolver
 
@@ -82,7 +85,8 @@ func init() {
 	dynamicHostResolver = NewDynamicHostResolver(2)
 }
 
-func CreateRoundRobinBackend(localhostport string, addresses []string) (*RoundRobinBackend, error) {
+func CreateRoundRobinBackend(localhostport string, addresses []string, connectionEstablished ConnectionEstablished) (*RoundRobinBackend, error) {
+	zap.L().Info("create round robin backend", zap.String("localhostport", localhostport), zap.Strings("addresses", addresses))
 	if len(addresses) <= 0 {
 		return nil, fmt.Errorf("no address")
 	}
@@ -98,21 +102,24 @@ func CreateRoundRobinBackend(localhostport string, addresses []string) (*RoundRo
 			if pos != -1 {
 				host := u.Host[0:pos]
 				port := u.Host[pos+1:]
+				zap.L().Info("add backend", zap.String("host", host), zap.String("port", port), zap.String("protocol", u.Scheme))
 				if isIPAddress(host) {
 					var backend Backend
 					var err error
 					if u.Scheme == "udp" {
 						backend, err = NewUDPBackend(localhostport, u.Host)
 					} else {
-						backend, err = NewTCPBackend(localhostport, u.Host)
+						backend, err = NewTCPBackend(localhostport, u.Host, connectionEstablished)
 					}
 					if err != nil {
 						return nil, err
 					}
 					rrBackend.AddBackend(backend)
 				} else {
+					zap.L().Info("add host to dynamic resolver", zap.String("host", host))
+
 					dynamicHostResolver.ResolveHost(host, func(hostname string, newIPs []string, removedIPs []string) {
-						rrBackend.hostIPChanged(u.Scheme, localhostport, hostname, newIPs, removedIPs, port)
+						rrBackend.hostIPChanged(u.Scheme, localhostport, hostname, newIPs, removedIPs, port, connectionEstablished)
 					})
 				}
 			}
@@ -124,6 +131,7 @@ func CreateRoundRobinBackend(localhostport string, addresses []string) (*RoundRo
 }
 
 func NewUDPBackend(localhostport string, hostport string) (*UDPBackend, error) {
+	zap.L().Info("create udp backend", zap.String("localhostport", localhostport), zap.String("hostport", hostport))
 	backendAddr, err := net.ResolveUDPAddr("udp", hostport)
 	if err != nil {
 		return nil, err
@@ -171,10 +179,12 @@ func (b *UDPBackend) Close() {
 	}
 }
 
-func NewTCPBackend(localhostport string, hostport string) (*TCPBackend, error) {
+func NewTCPBackend(localhostport string, hostport string, connectionEstablished ConnectionEstablished) (*TCPBackend, error) {
+	zap.L().Info("create tcp backend", zap.String("localhostport", localhostport), zap.String("hostport", hostport))
 	return &TCPBackend{localAddr: localhostport,
-		backendAddr: hostport,
-		conn:        nil}, nil
+		backendAddr:           hostport,
+		conn:                  nil,
+		connectionEstablished: connectionEstablished}, nil
 }
 
 func (t *TCPBackend) Send(msg *Message) error {
@@ -183,25 +193,41 @@ func (t *TCPBackend) Send(msg *Message) error {
 		return err
 	}
 
+	zap.L().Info("send message to TCP backend with conn", zap.String("backendAddr", t.backendAddr), zap.Any("conn", t.conn))
+
 	for i := 0; i < 2; i++ {
 		if t.conn == nil {
-			conn, err := net.Dial("tcp", t.backendAddr)
-			if err != nil {
-				zap.L().Error("Fail to connect backend", zap.String("backendAddr", t.backendAddr))
-				return err
-			}
-			t.conn = conn
+			t.connect()
 		}
-		_, err := t.conn.Write(b)
+
+		if t.conn == nil {
+			continue
+		}
+
+		n, err := t.conn.Write(b)
+		zap.L().Info("try to write message to TCP backend", zap.String("backendAddr", t.conn.RemoteAddr().String()), zap.String("localAddr", t.conn.LocalAddr().String()), zap.Int("bytesWritten", n))
 		if err == nil {
 			zap.L().Debug("Succeed to send message to backend", zap.String("backendAddr", t.backendAddr))
 			return nil
 		}
-		zap.L().Debug("Fail to send message to backend", zap.String("backendAddr", t.backendAddr))
+		zap.L().Info("Fail to send message to backend", zap.String("backendAddr", t.backendAddr))
 		t.conn.Close()
 		t.conn = nil
 	}
 	return fmt.Errorf("fail to send message to backend %s", t.backendAddr)
+}
+
+func (t *TCPBackend) connect() error {
+	conn, err := net.Dial("tcp", t.backendAddr)
+	if err != nil {
+		zap.L().Error("Fail to connect backend", zap.String("backendAddr", t.backendAddr))
+		t.conn = nil
+		return err
+	}
+	zap.L().Info("Succeed to connect backend", zap.String("backendAddr", t.backendAddr), zap.String("remotAddr", conn.LocalAddr().String()))
+	t.conn = conn
+	t.connectionEstablished(conn)
+	return nil
 }
 
 func (t *TCPBackend) GetAddress() string {
@@ -288,7 +314,17 @@ func (rb *RoundRobinBackend) Send(msg *Message) error {
 }
 
 func (rb *RoundRobinBackend) GetAddress() string {
-	return ""
+	rb.Lock()
+	rb.Unlock()
+
+	r := "RoundRobin://"
+	for index, backend := range rb.backends {
+		if index != 0 {
+			r += ","
+		}
+		r += backend.GetAddress()
+	}
+	return r
 }
 
 func (rb *RoundRobinBackend) getNextBackendIndex() (int, error) {
@@ -328,15 +364,17 @@ func (rb *RoundRobinBackend) AddBackendChangeListener(listener BackendChangeList
 	}
 }
 
-func (rb *RoundRobinBackend) hostIPChanged(protocol string, localhostport, hostname string, newIPs []string, removedIPs []string, port string) {
+func (rb *RoundRobinBackend) hostIPChanged(protocol string, localhostport, hostname string, newIPs []string, removedIPs []string, port string, connectionEstablished ConnectionEstablished) {
 	for _, ip := range newIPs {
 		zap.L().Info("find a new IP for host", zap.String("host", hostname), zap.String("ip", ip))
+		hostport := rb.createHostPort(ip, port)
 		if protocol == "udp" {
-			hostport := fmt.Sprintf("%s:%s", ip, port)
-			if isIPv6(ip) {
-				hostport = fmt.Sprintf("[%s]:%s", ip, port)
-			}
 			backend, err := NewUDPBackend(localhostport, hostport)
+			if err == nil {
+				rb.AddBackend(backend)
+			}
+		} else if protocol == "tcp" {
+			backend, err := NewTCPBackend(localhostport, hostport, connectionEstablished)
 			if err == nil {
 				rb.AddBackend(backend)
 			}
@@ -344,13 +382,17 @@ func (rb *RoundRobinBackend) hostIPChanged(protocol string, localhostport, hostn
 	}
 	for _, ip := range removedIPs {
 		zap.L().Info("remove ip for host", zap.String("host", hostname), zap.String("ip", ip))
-		hostport := fmt.Sprintf("%s:%s", ip, port)
-		if isIPv6(ip) {
-			hostport = fmt.Sprintf("[%s]:%s", ip, port)
-		}
+		hostport := rb.createHostPort(ip, port)
 		rb.RemoveBackend(hostport)
 	}
+}
 
+func (rb *RoundRobinBackend) createHostPort(ip string, port string) string {
+	hostport := fmt.Sprintf("%s:%s", ip, port)
+	if isIPv6(ip) {
+		hostport = fmt.Sprintf("[%s]:%s", ip, port)
+	}
+	return hostport
 }
 
 func (rb *RoundRobinBackend) Close() {
@@ -420,3 +462,4 @@ func (dbb *DialogBasedBackend) cleanExpiredDialog() {
 		delete(dbb.backends, k)
 	}
 }
+

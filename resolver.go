@@ -43,11 +43,11 @@ func (hr *PreConfigHostResolver) GetIp(name string) (string, error) {
 
 type IPResolvedCallback = func(hostname string, newIPs []string, removedIPs []string)
 
-type addressWithCallback struct {
+type AddressWithCallback struct {
 	addrs []string
 	//times of resolved
-	failed   int
-	callback IPResolvedCallback
+	failed    int
+	callbacks []IPResolvedCallback
 }
 
 // DynamicHostResolver dynamically resolve the host name to IP addresses
@@ -59,28 +59,39 @@ type DynamicHostResolver struct {
 	// 0: no stop, 1: stop the resolve
 	stop int32
 
-	hostIPs map[string]*addressWithCallback
+	hostIPs map[string]*AddressWithCallback
 }
 
+func NewAddressWithCallback() *AddressWithCallback {
+	return &AddressWithCallback{addrs: make([]string, 0), failed: 0, callbacks: make([]IPResolvedCallback, 0)}
+}
 func NewDynamicHostResolver(interval int) *DynamicHostResolver {
 	r := &DynamicHostResolver{interval: time.Duration(interval) * time.Second,
 		stop:    0,
-		hostIPs: make(map[string]*addressWithCallback)}
+		hostIPs: make(map[string]*AddressWithCallback)}
 	go r.periodicalResolve()
 	return r
 }
 
 func (r *DynamicHostResolver) ResolveHost(addr string, callback IPResolvedCallback) {
 	r.Lock()
-	defer r.Unlock()
-	if _, ok := r.hostIPs[addr]; !ok {
-		ips, err := r.doResolve(addr)
-		if err == nil {
-			r.hostIPs[addr] = &addressWithCallback{addrs: ips, failed: 0, callback: callback}
-			callback(addr, ips, make([]string, 0))
-		} else {
-			r.hostIPs[addr] = &addressWithCallback{addrs: make([]string, 0), failed: 0, callback: callback}
+
+	if addrWithCallback, ok := r.hostIPs[addr]; !ok {
+		r.hostIPs[addr] = NewAddressWithCallback()
+		r.hostIPs[addr].callbacks = append(r.hostIPs[addr].callbacks, callback)
+		addrs, err := r.doResolve(addr)
+		// unlock because addressResolved() method will try to lock again
+		r.Unlock()
+		if err == nil && len(addrs) > 0 {
+			r.addressResolved(addr, addrs, nil)
 		}
+	} else {
+		addrWithCallback.callbacks = append(addrWithCallback.callbacks, callback)
+
+		if r.hostIPs[addr].addrs != nil {
+			callback(addr, r.hostIPs[addr].addrs, make([]string, 0))
+		}
+		r.Unlock()
 	}
 }
 
@@ -155,7 +166,7 @@ func (r *DynamicHostResolver) addressResolved(hostname string, addrs []string, e
 				entry.addrs = newAddrs
 				zap.L().Error("the failed times for resolving hostname exceeds 3", zap.String("hostname", hostname), zap.Int("failed", entry.failed))
 				entry.failed = 0
-				go entry.callback(hostname, newAddrs, removedAddrs)
+				go r.notifyAddressChanged(hostname, entry, newAddrs, removedAddrs)
 			}
 		} else {
 			newAddrs := strArraySub(addrs, entry.addrs)
@@ -164,17 +175,25 @@ func (r *DynamicHostResolver) addressResolved(hostname string, addrs []string, e
 			entry.addrs = addrs
 			if len(newAddrs) > 0 || len(removedAddrs) > 0 {
 				zap.L().Info("the ip address of host is changed", zap.String("hostname", hostname), zap.String("newAddrs", strings.Join(newAddrs, ",")), zap.String("removedAddrs", strings.Join(removedAddrs, ",")))
-				go entry.callback(hostname, newAddrs, removedAddrs)
+
+				go r.notifyAddressChanged(hostname, entry, newAddrs, removedAddrs)
 			}
 		}
 	}
 }
 
+func (r *DynamicHostResolver) notifyAddressChanged(hostname string, entry *AddressWithCallback, newAddrs []string, removedAddrs []string) {
+	for _, callback := range entry.callbacks {
+		callback(hostname, newAddrs, removedAddrs)
+	}
+
+}
 func (r *DynamicHostResolver) doResolve(hostname string) ([]string, error) {
 
 	ips, err := net.LookupIP(hostname)
 
 	if err != nil {
+		zap.L().Error("fail to find ip address", zap.String("hostname", hostname))
 		return nil, err
 	}
 
@@ -188,3 +207,4 @@ func (r *DynamicHostResolver) doResolve(hostname string) ([]string, error) {
 	}
 	return result, nil
 }
+

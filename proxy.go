@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"go.uber.org/zap"
 )
@@ -17,10 +18,12 @@ type BackendChangeEvent struct {
 }
 
 type ProxyItem struct {
+	sync.Mutex
 	transports []ServerTransport
 	backend    *RoundRobinBackend
 	dests      []string
 	defRoute   bool
+	msgHandler MessageHandler
 }
 
 type BackendWithParent struct {
@@ -161,7 +164,7 @@ func (p *Proxy) AddItem(item *ProxyItem) {
 
 func (p *Proxy) Start() error {
 	for _, item := range p.items {
-		err := p.startItem(item)
+		err := item.start()
 		if err != nil {
 			return err
 		}
@@ -201,22 +204,19 @@ func (p *Proxy) receiveAndProcessMessage() {
 				delete(p.backends, backend.GetAddress())
 			}
 		case conn := <-p.connAcceptedChannel:
-			host, port, err := net.SplitHostPort(conn.RemoteAddr().String())
+			_, port, err := net.SplitHostPort(conn.RemoteAddr().String())
 			if err == nil {
-				port_i, err := strconv.Atoi(port)
+				_, err := strconv.Atoi(port)
 				if err == nil {
-					trans, err := p.clientTransMgr.GetTransport("tcp", host, port_i)
-					if err == nil {
-						trans.primary, _ = NewTCPClientTransportWithConn(conn)
-					}
+					//p.clientTransMgr.GetTransport("tcp", host, port_i, "")
+					//trans, err := p.clientTransMgr.GetTransport("tcp", host, port_i, "")
+					//if err == nil {
+					//	trans.primary, _ = NewTCPClientTransportWithConn(conn)
+					//}
 				}
 			}
 		}
 	}
-
-}
-func (p *Proxy) startItem(item *ProxyItem) error {
-	return item.start(p)
 }
 
 func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
@@ -231,6 +231,22 @@ func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 	// set the received parameters
 	if msg.IsRequest() && rawMessage.ReceivedSupport {
 		msg.SetReceived(rawMessage.PeerAddr, rawMessage.PeerPort)
+	}
+	if msg.IsRequest() && rawMessage.TcpConn != nil {
+		host, port, _, err := p.getNextReponseHop(msg)
+		if strings.HasPrefix(host, "[") {
+			host = host[1 : len(host)-1]
+		}
+		zap.L().Info("receive a message from tcp", zap.String("host", host), zap.Int("port", port))
+		if err == nil {
+			transId, err := msg.GetClientTransaction()
+			if err == nil {
+				trans, err := p.clientTransMgr.GetTransport("tcp", host, port, transId)
+				if err == nil {
+					trans.primary, _ = NewTCPClientTransportWithConn(rawMessage.TcpConn)
+				}
+			}
+		}
 	}
 	// The proxy will inspect the URI in the topmost Route header
 	// field value.  If it indicates this proxy, the proxy removes it
@@ -417,6 +433,7 @@ func (p *Proxy) addRecordRoute(msg *Message, transport ServerTransport) {
 }
 
 func (p *Proxy) sendToBackend(msg *Message) {
+
 	backendItem := p.findBackendProxyItem()
 	if backendItem == nil {
 		zap.L().Error("Fail to find the backend for my message", zap.String("message", msg.String()))
@@ -438,6 +455,8 @@ func (p *Proxy) sendToBackend(msg *Message) {
 				zap.L().Debug("bind client transaction with backend", zap.String("trandId", transId), zap.String("backend", backend.GetAddress()))
 				p.dialogBasedBackends.AddBackend(transId, backend, msg.GetExpires(0))
 			}
+		} else {
+			zap.L().Error("Fail to send the message to the backend", zap.String("backend", backend.GetAddress()), zap.String("message", msg.String()))
 		}
 	}
 }
@@ -582,15 +601,17 @@ func (p *Proxy) getNextReponseHop(msg *Message) (host string, port int, transpor
 	return
 }
 
-func (p *Proxy) findClientTransport(host string, port int, transport string) (ClientTransport, error) {
-	trans, err := p.clientTransMgr.GetTransport(transport, host, port)
+func (p *Proxy) findClientTransport(host string, port int, transport string, transId string) (ClientTransport, error) {
+	trans, err := p.clientTransMgr.GetTransport(transport, host, port, transId)
 	if err == nil && trans.primary == nil {
 		serverTrans, ok := p.selfLearnRoute.GetRoute(host)
 		if ok {
 			udpServerTrans, ok := serverTrans.(*UDPServerTransport)
-			remoteAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
-			if err == nil && ok {
-				trans.primary, _ = NewUDPClientTransportWithConn(udpServerTrans.conn, remoteAddr)
+			if ok {
+				remoteAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+				if err == nil && ok {
+					trans.primary, _ = NewUDPClientTransportWithConn(udpServerTrans.conn, remoteAddr)
+				}
 			}
 		}
 	}
@@ -602,8 +623,15 @@ func (p *Proxy) sendMessage(host string, port int, transport string, msg *Messag
 	if err != nil {
 		ip = host
 	}
-	t, err := p.findClientTransport(ip, port, transport)
+	transId, err := msg.GetClientTransaction()
+	if err != nil {
+		transId = ""
+	}
+	t, err := p.findClientTransport(ip, port, transport, transId)
 	if err == nil {
+		if msg.IsFinalResponse() {
+			p.clientTransMgr.RemoveTransport(transport, host, port, transId)
+		}
 		t.Send(msg)
 	} else {
 		zap.L().Error("Fail to find the transport", zap.String("host", host), zap.Int("port", port), zap.String("transport", transport), zap.String("message", msg.String()))
@@ -619,31 +647,70 @@ func NewProxyItem(address string,
 	receivedSupport bool,
 	defRoute bool,
 	connAcceptedListener ConnectionAcceptedListener,
-	selfLearnRoute *SelfLearnRoute) (*ProxyItem, error) {
+	selfLearnRoute *SelfLearnRoute,
+	msgHandler MessageHandler) (*ProxyItem, error) {
+	zap.L().Info("NewProxyItem", zap.Int("udpPort", udpPort), zap.Int("tcpPort", tcpPort), zap.String("backends", strings.Join(backends, ",")), zap.String("dests", strings.Join(dests, ",")), zap.Bool("receivedSupport", receivedSupport), zap.Bool("defRoute", defRoute))
 	transports := make([]ServerTransport, 0)
 	if udpPort > 0 {
 		udpServerTrans, err := NewUDPServerTransport(address, udpPort, receivedSupport, selfLearnRoute)
 		if err == nil {
 			transports = append(transports, udpServerTrans)
 		}
-	} else if tcpPort > 0 {
+	}
+	if tcpPort > 0 {
 		transports = append(transports, NewTCPServerTransport(address, tcpPort, receivedSupport, connAcceptedListener, selfLearnRoute))
 	}
-	backend, _ := CreateRoundRobinBackend(net.JoinHostPort(address, "0"), backends)
+
 	proxyItem := &ProxyItem{transports: transports,
-		backend:  backend,
-		dests:    dests,
-		defRoute: defRoute}
+		backend:    nil,
+		dests:      dests,
+		defRoute:   defRoute,
+		msgHandler: msgHandler,
+	}
+
+	connectionEstablished := func(conn net.Conn) {
+		zap.L().Info("tcp connection established", zap.String("remoteAddr", conn.RemoteAddr().String()), zap.String("localAddr", conn.LocalAddr().String()))
+		proxyItem.connectionEstablished(conn, receivedSupport, selfLearnRoute)
+	}
+
+	proxyItem.backend, _ = CreateRoundRobinBackend(net.JoinHostPort(address, "0"), backends, connectionEstablished)
 
 	return proxyItem, nil
 }
 
-func (p *ProxyItem) start(msgHandler MessageHandler) error {
+func (p *ProxyItem) connectionEstablished(conn net.Conn, receivedSupport bool, selfLearnRoute *SelfLearnRoute) {
+	p.Lock()
+	defer p.Unlock()
+
+	p.removeExitServerTransports()
+	trans := NewTCPServerTransportWithConn(conn, receivedSupport, selfLearnRoute)
+	p.transports = append(p.transports, trans)
+	trans.Start(p.msgHandler)
+
+}
+
+func (p *ProxyItem) removeExitServerTransports() {
+	ok_transports := make([]ServerTransport, 0)
+
+	for _, transport := range p.transports {
+		if !transport.IsExit() {
+			ok_transports = append(ok_transports, transport)
+		}
+	}
+
+	if len(ok_transports) != len(p.transports) {
+		p.transports = ok_transports
+	}
+
+}
+
+func (p *ProxyItem) start() error {
 	for _, trans := range p.transports {
-		err := trans.Start(msgHandler)
+		err := trans.Start(p.msgHandler)
 		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
+

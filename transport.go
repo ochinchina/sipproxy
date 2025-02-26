@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -19,6 +20,7 @@ type RawMessage struct {
 	Message         *Message
 	From            ServerTransport
 	ReceivedSupport bool
+	TcpConn         net.Conn
 }
 
 func NewRawMessage(peerAddr string, peerPort int, from ServerTransport, receivedSupport bool, msg *Message) *RawMessage {
@@ -27,7 +29,8 @@ func NewRawMessage(peerAddr string, peerPort int, from ServerTransport, received
 		PeerPort:        peerPort,
 		From:            from,
 		ReceivedSupport: receivedSupport,
-		Message:         msg}
+		Message:         msg,
+		TcpConn:         nil}
 }
 
 type MessageHandler interface {
@@ -46,6 +49,9 @@ type ServerTransport interface {
 	GetAddress() string
 
 	GetPort() int
+
+	// return True if the transport exit
+	IsExit() bool
 }
 
 type SizedByteArray struct {
@@ -69,14 +75,17 @@ type ConnectionAcceptedListener interface {
 type TCPServerTransport struct {
 	addr                 string
 	port                 int
+	conn                 net.Conn
 	receivedSupport      bool
 	selfLearnRoute       *SelfLearnRoute
 	msgHandler           MessageHandler
 	connAcceptedListener ConnectionAcceptedListener
+	exit                 bool
 }
 
 type ClientTransport interface {
 	Send(msg *Message) error
+	IsExpired() bool
 }
 
 type FailOverClientTransport struct {
@@ -84,8 +93,8 @@ type FailOverClientTransport struct {
 	secondary ClientTransport
 }
 
-func NewFailOverClientTransport() *FailOverClientTransport {
-	return &FailOverClientTransport{}
+func NewFailOverClientTransport(primary ClientTransport, secondary ClientTransport) *FailOverClientTransport {
+	return &FailOverClientTransport{primary: primary, secondary: secondary}
 }
 
 func (fct *FailOverClientTransport) SetPrimary(primary ClientTransport) {
@@ -114,6 +123,10 @@ func (fct *FailOverClientTransport) IsConnected() bool {
 	return fct.primary != nil || fct.secondary != nil
 }
 
+func (fct *FailOverClientTransport) IsExpired() bool {
+	return (fct.primary != nil && fct.primary.IsExpired()) || (fct.secondary != nil && fct.secondary.IsExpired())
+}
+
 type UDPClientTransport struct {
 	conn       *net.UDPConn
 	localAddr  *net.UDPAddr
@@ -124,6 +137,7 @@ type TCPClientTransport struct {
 	addr          string
 	reconnectable bool
 	conn          net.Conn
+	expire        int64
 }
 
 var SupportedProtocol = map[string]string{"udp": "udp", "tcp": "tcp"}
@@ -178,35 +192,71 @@ func (u *UDPClientTransport) Send(msg *Message) error {
 
 }
 
+func (u *UDPClientTransport) IsExpired() bool {
+	return false
+}
+
 type ClientTransportMgr struct {
 	sync.Mutex
-	transports map[string]*FailOverClientTransport
+	transports    map[string]*FailOverClientTransport
+	lastCleanTime int64
 }
 
 // NewClientTransportMgr create a client transport manager object
 func NewClientTransportMgr() *ClientTransportMgr {
-	return &ClientTransportMgr{transports: make(map[string]*FailOverClientTransport)}
+	return &ClientTransportMgr{transports: make(map[string]*FailOverClientTransport),
+		lastCleanTime: time.Now().Unix()}
+
 }
 
-// GetTransport Get the client ransport by the protocl, host and port
-func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int) (*FailOverClientTransport, error) {
+// GetTransport Get the client ransport by the protocol, host and port
+func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int, transId string) (*FailOverClientTransport, error) {
 	c.Lock()
 	defer c.Unlock()
+
+	c.cleanExpiredTransport()
 
 	protocol = strings.ToLower(protocol)
 	if _, ok := SupportedProtocol[protocol]; !ok {
 		return nil, fmt.Errorf("not support %s", protocol)
 	}
-	fullAddr := fmt.Sprintf("%s://%s", protocol, net.JoinHostPort(host, strconv.Itoa(port)))
+	fullAddr := c.getFullAddr(protocol, host, port, transId)
+
+	zap.L().Info("get full address", zap.String("fullAddr", fullAddr))
+
 	if trans, ok := c.transports[fullAddr]; ok {
+		zap.L().Info("get client by full address", zap.String("fullAddr", fullAddr))
 		return trans, nil
 	}
 	trans, err := c.createClientTransport(protocol, host, port)
 	if err != nil {
+		zap.L().Info("fail to client by full address", zap.String("fullAddr", fullAddr))
 		return nil, err
 	}
 	c.transports[fullAddr] = trans
+	zap.L().Info("create client by full address", zap.String("fullAddr", fullAddr))
 	return trans, nil
+}
+
+func (c *ClientTransportMgr) RemoveTransport(protocol string, host string, port int, transId string) {
+	c.Lock()
+	defer c.Unlock()
+	protocol = strings.ToLower(protocol)
+	if _, ok := SupportedProtocol[protocol]; !ok {
+		return
+	}
+	fullAddr := c.getFullAddr(protocol, host, port, transId)
+	delete(c.transports, fullAddr)
+}
+
+func (c *ClientTransportMgr) getFullAddr(protocol string, host string, port int, transId string) string {
+	fullAddr := fmt.Sprintf("%s://%s", protocol, net.JoinHostPort(host, strconv.Itoa(port)))
+
+	if protocol == "tcp" && transId != "" {
+		fullAddr = fmt.Sprintf("%s-%s", fullAddr, transId)
+	}
+
+	return fullAddr
 }
 
 func (c *ClientTransportMgr) createClientTransport(protocol string, host string, port int) (*FailOverClientTransport, error) {
@@ -214,17 +264,47 @@ func (c *ClientTransportMgr) createClientTransport(protocol string, host string,
 	var err error = nil
 	if protocol == "udp" {
 		client, err = NewUDPClientTransport(host, port)
+		if err == nil {
+			return NewFailOverClientTransport(client, nil), nil
+		} else {
+			return nil, err
+		}
 	} else if protocol == "tcp" {
-		client, err = NewTCPClientTransport(host, port)
+		addr := c.getFullAddr(protocol, host, port, "")
+		if trans, ok := c.transports[addr]; ok {
+			client = trans.secondary
+		} else {
+			client, err = NewTCPClientTransport(host, port)
+			if err == nil {
+				c.transports[addr] = NewFailOverClientTransport(nil, client)
+			} else {
+				return nil, err
+			}
+		}
+		return NewFailOverClientTransport(nil, client), nil
+
 	} else {
 		return nil, fmt.Errorf("not support %s", protocol)
 	}
-	if err != nil {
-		return nil, err
+
+}
+
+func (c *ClientTransportMgr) cleanExpiredTransport() {
+	var now int64 = time.Now().Unix()
+	if now-c.lastCleanTime < 60 {
+		return
 	}
-	trans := NewFailOverClientTransport()
-	trans.secondary = client
-	return trans, nil
+	c.lastCleanTime = now
+	var expiredTransports []string = make([]string, 0)
+
+	for key, transport := range c.transports {
+		if (transport.primary != nil && transport.primary.IsExpired()) || (transport.secondary != nil && transport.secondary.IsExpired()) {
+			expiredTransports = append(expiredTransports, key)
+		}
+	}
+	for _, key := range expiredTransports {
+		delete(c.transports, key)
+	}
 
 }
 
@@ -233,13 +313,16 @@ func NewTCPClientTransport(host string, port int) (*TCPClientTransport, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	return &TCPClientTransport{addr: addr,
 		reconnectable: true,
-		conn:          nil}, nil
+		conn:          nil,
+		expire:        0}, nil
 }
 
 func NewTCPClientTransportWithConn(conn net.Conn) (*TCPClientTransport, error) {
+	zap.L().Info("create TCPClientTransportWithConn", zap.String("remoteAddr", conn.RemoteAddr().String()))
 	return &TCPClientTransport{addr: conn.RemoteAddr().String(),
 		reconnectable: false,
-		conn:          nil}, nil
+		conn:          conn,
+		expire:        time.Now().Unix() + 3600}, nil
 }
 
 func (t *TCPClientTransport) Send(msg *Message) error {
@@ -273,6 +356,10 @@ func (t *TCPClientTransport) Send(msg *Message) error {
 	}
 	zap.L().Error("Fail to send message to tcp server", zap.String("addr", t.addr))
 	return fmt.Errorf("fail to send message to %s", t.addr)
+}
+
+func (t *TCPClientTransport) IsExpired() bool {
+	return t.expire > 0 && time.Now().Unix() > t.expire
 }
 
 func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) (*UDPServerTransport, error) {
@@ -368,6 +455,10 @@ func (u *UDPServerTransport) GetPort() int {
 	return i
 }
 
+func (u *UDPServerTransport) IsExit() bool {
+	return false
+}
+
 func NewTCPServerTransport(addr string,
 	port int,
 	receivedSupport bool,
@@ -375,21 +466,49 @@ func NewTCPServerTransport(addr string,
 	selfLearnRoute *SelfLearnRoute) *TCPServerTransport {
 	return &TCPServerTransport{addr: addr,
 		port:                 port,
+		conn:                 nil,
 		receivedSupport:      receivedSupport,
 		connAcceptedListener: connAcceptedListener,
-		selfLearnRoute:       selfLearnRoute}
+		selfLearnRoute:       selfLearnRoute,
+		exit:                 false,
+	}
+}
+
+func NewTCPServerTransportWithConn(conn net.Conn,
+	receivedSupport bool,
+	selfLearnRoute *SelfLearnRoute) *TCPServerTransport {
+	addr, port, err := net.SplitHostPort(conn.LocalAddr().String())
+
+	if err == nil {
+		port_i, _ := strconv.Atoi(port)
+		zap.L().Info("Create new TCP server transport", zap.String("remoteAddr", conn.RemoteAddr().String()), zap.String("localAddr", conn.LocalAddr().String()))
+		return &TCPServerTransport{addr: addr,
+			port:                 port_i,
+			conn:                 conn,
+			receivedSupport:      receivedSupport,
+			connAcceptedListener: nil,
+			selfLearnRoute:       selfLearnRoute,
+			exit:                 false,
+		}
+	}
+	return nil
+
 }
 
 func (t *TCPServerTransport) Start(msgHandler MessageHandler) error {
 	t.msgHandler = msgHandler
-	hostPort := net.JoinHostPort(t.addr, strconv.Itoa(t.port))
-	ln, err := net.Listen("tcp", hostPort)
-	if err != nil {
-		zap.L().Error("Fail to listen", zap.String("hostPort", hostPort))
-		return err
+	if t.conn == nil {
+		hostPort := net.JoinHostPort(t.addr, strconv.Itoa(t.port))
+		ln, err := net.Listen("tcp", hostPort)
+		if err != nil {
+			zap.L().Error("Fail to listen", zap.String("hostPort", hostPort))
+			return err
+		}
+		zap.L().Info("Succeed to listen on TCP", zap.String("hostPort", hostPort))
+		go t.acceptConnection(ln)
+	} else {
+		go t.receiveMessage(t.conn)
 	}
-	zap.L().Info("Succeed listen", zap.String("hostPort", hostPort))
-	go t.acceptConnection(ln)
 	return nil
 }
 
@@ -410,15 +529,24 @@ func (t *TCPServerTransport) acceptConnection(ln net.Listener) {
 
 func (t *TCPServerTransport) receiveMessage(conn net.Conn) {
 	reader := bufio.NewReader(conn)
-	peerAddr, port, _ := net.SplitHostPort(conn.RemoteAddr().String())
-	peerPort, _ := strconv.Atoi(port)
+	peerAddr, remotePort, _ := net.SplitHostPort(conn.RemoteAddr().String())
+	peerPort, _ := strconv.Atoi(remotePort)
+	localAddr, localPort, _ := net.SplitHostPort(conn.LocalAddr().String())
+	zap.L().Info("start to receive sip message from tcp", zap.String("peerAddr", peerAddr), zap.String("peerPort", remotePort), zap.String("localAddr", localAddr), zap.String("localPort", localPort))
 	for {
 		msg, err := ParseMessage(reader)
 		if err != nil {
+			conn.Close()
+			zap.L().Error("Fail to parse message", zap.String("peerAddr", peerAddr), zap.String("peerPort", remotePort), zap.String("localAddr", localAddr), zap.String("localPort", localPort), zap.String("error", err.Error()))
 			break
 		}
 		msg.ReceivedFrom = t
-		t.msgHandler.HandleRawMessage(NewRawMessage(peerAddr, peerPort, t, t.receivedSupport, msg))
+		rawMsg := NewRawMessage(peerAddr, peerPort, t, t.receivedSupport, msg)
+		rawMsg.TcpConn = conn
+		t.msgHandler.HandleRawMessage(rawMsg)
+	}
+	if t.conn != nil {
+		t.exit = true
 	}
 }
 
@@ -437,3 +565,8 @@ func (t *TCPServerTransport) GetAddress() string {
 func (t *TCPServerTransport) GetPort() int {
 	return t.port
 }
+
+func (u *TCPServerTransport) IsExit() bool {
+	return u.conn != nil && u.exit
+}
+

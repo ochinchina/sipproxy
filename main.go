@@ -171,8 +171,10 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 	if dialogTimeout <= 0 {
 		dialogTimeout = getDefaultDialogTimeout()
 	}
-	proxy := NewProxy(config.Name, int64(dialogTimeout), toKeepNextHopRoute(config.KeepNextHopRoute), preConfigRoute, resolver, selfLearnRoute)
+	proxies := make([]*Proxy, 0)
+	//proxy := NewProxy(config.Name, int64(dialogTimeout), toKeepNextHopRoute(config.KeepNextHopRoute), preConfigRoute, resolver, selfLearnRoute)
 	for _, listen := range config.Listens {
+		proxy := NewProxy(config.Name, int64(dialogTimeout), toKeepNextHopRoute(config.KeepNextHopRoute), preConfigRoute, resolver, selfLearnRoute)
 		item, err := NewProxyItem(listen.Address,
 			listen.UDPPort,
 			listen.TCPPort,
@@ -181,20 +183,32 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 			listen.defRoute,
 			!listen.NoReceived,
 			proxy,
-			selfLearnRoute)
+			selfLearnRoute,
+			proxy)
+
 		if err != nil {
 			zap.L().Error("Fail to start proxy with error", zap.String("error", err.Error()))
 			return err
 		}
+
 		proxy.AddItem(item)
+		proxies = append(proxies, proxy)
 	}
-	err := proxy.Start()
-	if err == nil {
-		zap.L().Info("Succeed to start proxy", zap.String("name", config.Name))
+	failed_proxies := 0
+	for _, proxy := range proxies {
+		err := proxy.Start()
+		if err == nil {
+			zap.L().Info("Succeed to start proxy", zap.String("name", config.Name))
+		} else {
+			failed_proxies += 1
+			zap.L().Error("Fail to start proxy", zap.String("name", config.Name))
+		}
+	}
+	if failed_proxies > 0 {
+		return fmt.Errorf("Failed to start %d proxies", failed_proxies)
 	} else {
-		zap.L().Error("Fail to start proxy", zap.String("name", config.Name))
+		return nil
 	}
-	return err
 }
 
 func createPreConfigRoute(config ProxyConfig) *PreConfigRoute {
@@ -265,3 +279,4 @@ func main() {
 		zap.L().Error("Fail to start application", zap.String("error", err.Error()))
 	}
 }
+
