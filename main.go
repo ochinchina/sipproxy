@@ -35,6 +35,10 @@ type ProxyConfig struct {
 		Dests      []string `yaml:",omitempty"`
 		NoReceived bool     `yaml:"no-received,omitempty"`
 		defRoute   bool     `yaml:"def-route,omitempty"`
+		// True if the route must be recorded in the route header
+		// False: no record-route will be added to the header if there is any record-route in the header
+		// If not specified, the route must be recorded in the route header
+		MustRecordRoute bool `yaml:"must-record-route,omitempty"`
 	}
 	Route []struct {
 		Dests    []string
@@ -174,7 +178,14 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 	proxies := make([]*Proxy, 0)
 	//proxy := NewProxy(config.Name, int64(dialogTimeout), toKeepNextHopRoute(config.KeepNextHopRoute), preConfigRoute, resolver, selfLearnRoute)
 	for _, listen := range config.Listens {
-		proxy := NewProxy(config.Name, int64(dialogTimeout), toKeepNextHopRoute(config.KeepNextHopRoute), preConfigRoute, resolver, selfLearnRoute)
+		proxy := NewProxy(config.Name, 
+			int64(dialogTimeout), 
+			toKeepNextHopRoute(config.KeepNextHopRoute), 
+			preConfigRoute, 
+			resolver, 
+			selfLearnRoute, 
+			!listen.NoReceived,
+			listen.MustRecordRoute)
 		item, err := NewProxyItem(listen.Address,
 			listen.UDPPort,
 			listen.TCPPort,
@@ -205,7 +216,7 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 		}
 	}
 	if failed_proxies > 0 {
-		return fmt.Errorf("Failed to start %d proxies", failed_proxies)
+		return fmt.Errorf("failed to start %d proxies", failed_proxies)
 	} else {
 		return nil
 	}

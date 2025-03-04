@@ -126,6 +126,7 @@ type Proxy struct {
 	items                []*ProxyItem
 	clientTransMgr       *ClientTransportMgr
 	selfLearnRoute       *SelfLearnRoute
+	mustRecordRoute      bool
 	msgChannel           chan *RawMessage
 	backendChangeChannel chan *BackendChangeEvent
 	connAcceptedChannel  chan net.Conn
@@ -138,19 +139,31 @@ func NewProxy(name string,
 	keepNextHopRoute bool,
 	preConfigRoute *PreConfigRoute,
 	resolver *PreConfigHostResolver,
-	selfLearnRoute *SelfLearnRoute) *Proxy {
+	selfLearnRoute *SelfLearnRoute,
+	receivedSupport bool,
+	mustRecordRoute bool) *Proxy {
+
 	proxy := &Proxy{myName: NewMyName(name),
 		keepNextHopRoute:     keepNextHopRoute,
 		preConfigRoute:       preConfigRoute,
 		resolver:             resolver,
 		items:                make([]*ProxyItem, 0),
-		clientTransMgr:       NewClientTransportMgr(),
+		clientTransMgr:       nil,
 		selfLearnRoute:       selfLearnRoute,
+		mustRecordRoute:      mustRecordRoute,
 		msgChannel:           make(chan *RawMessage, 10000),
 		backendChangeChannel: make(chan *BackendChangeEvent, 1000),
 		connAcceptedChannel:  make(chan net.Conn),
 		backends:             make(map[string]*BackendWithParent),
 		dialogBasedBackends:  NewDialogBasedBackend(dialogExpire)}
+
+	connectionEstablished := func(conn net.Conn) {
+		serverTransport := NewTCPServerTransportWithConn(conn, receivedSupport, selfLearnRoute)
+		serverTransport.Start(proxy)
+	}
+
+	proxy.clientTransMgr = NewClientTransportMgr(connectionEstablished)
+
 	go proxy.receiveAndProcessMessage()
 	return proxy
 }
@@ -204,15 +217,14 @@ func (p *Proxy) receiveAndProcessMessage() {
 				delete(p.backends, backend.GetAddress())
 			}
 		case conn := <-p.connAcceptedChannel:
-			_, port, err := net.SplitHostPort(conn.RemoteAddr().String())
+			host, port, err := net.SplitHostPort(conn.RemoteAddr().String())
 			if err == nil {
-				_, err := strconv.Atoi(port)
+				port_i, err := strconv.Atoi(port)
 				if err == nil {
-					//p.clientTransMgr.GetTransport("tcp", host, port_i, "")
-					//trans, err := p.clientTransMgr.GetTransport("tcp", host, port_i, "")
-					//if err == nil {
-					//	trans.primary, _ = NewTCPClientTransportWithConn(conn)
-					//}
+					trans, err := p.clientTransMgr.GetTransport("tcp", host, port_i, "")
+					if err == nil {
+						trans.primary, _ = NewTCPClientTransportWithConn(conn)
+					}
 				}
 			}
 		}
@@ -421,6 +433,10 @@ func (p *Proxy) addVia(msg *Message, transport ServerTransport) (*Via, error) {
 }
 
 func (p *Proxy) addRecordRoute(msg *Message, transport ServerTransport) {
+	// if no Record-Route header is found and the mustRecordRoute is false, no need to add Record-Route header
+	if _, err := msg.GetHeader("Record-Route"); err != nil && !p.mustRecordRoute {
+		return
+	}
 	addr := NewAddrSpec()
 	addr.sipURI = &SIPURI{Scheme: "sip", Host: transport.GetAddress(), port: transport.GetPort()}
 	addr.sipURI.AddParameter("lr", "")

@@ -134,10 +134,11 @@ type UDPClientTransport struct {
 }
 
 type TCPClientTransport struct {
-	addr          string
-	reconnectable bool
-	conn          net.Conn
-	expire        int64
+	addr                  string
+	reconnectable         bool
+	conn                  net.Conn
+	expire                int64
+	connectionEstablished ConnectionEstablished
 }
 
 var SupportedProtocol = map[string]string{"udp": "udp", "tcp": "tcp"}
@@ -198,14 +199,16 @@ func (u *UDPClientTransport) IsExpired() bool {
 
 type ClientTransportMgr struct {
 	sync.Mutex
-	transports    map[string]*FailOverClientTransport
-	lastCleanTime int64
+	transports            map[string]*FailOverClientTransport
+	lastCleanTime         int64
+	connectionEstablished ConnectionEstablished
 }
 
 // NewClientTransportMgr create a client transport manager object
-func NewClientTransportMgr() *ClientTransportMgr {
+func NewClientTransportMgr(connectionEstablished ConnectionEstablished) *ClientTransportMgr {
 	return &ClientTransportMgr{transports: make(map[string]*FailOverClientTransport),
-		lastCleanTime: time.Now().Unix()}
+		lastCleanTime:         time.Now().Unix(),
+		connectionEstablished: connectionEstablished}
 
 }
 
@@ -274,7 +277,7 @@ func (c *ClientTransportMgr) createClientTransport(protocol string, host string,
 		if trans, ok := c.transports[addr]; ok {
 			client = trans.secondary
 		} else {
-			client, err = NewTCPClientTransport(host, port)
+			client, err = NewTCPClientTransport(host, port, c.connectionEstablished)
 			if err == nil {
 				c.transports[addr] = NewFailOverClientTransport(nil, client)
 			} else {
@@ -309,20 +312,23 @@ func (c *ClientTransportMgr) cleanExpiredTransport() {
 }
 
 // NewTCPClientTransport create a TCP client transport with the specified host and port
-func NewTCPClientTransport(host string, port int) (*TCPClientTransport, error) {
+func NewTCPClientTransport(host string, port int, connectionEstablished ConnectionEstablished) (*TCPClientTransport, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	return &TCPClientTransport{addr: addr,
-		reconnectable: true,
-		conn:          nil,
-		expire:        0}, nil
+		reconnectable:         true,
+		conn:                  nil,
+		expire:                0,
+		connectionEstablished: connectionEstablished,
+	}, nil
 }
 
 func NewTCPClientTransportWithConn(conn net.Conn) (*TCPClientTransport, error) {
 	zap.L().Info("create TCPClientTransportWithConn", zap.String("remoteAddr", conn.RemoteAddr().String()))
 	return &TCPClientTransport{addr: conn.RemoteAddr().String(),
-		reconnectable: false,
-		conn:          conn,
-		expire:        time.Now().Unix() + 3600}, nil
+		reconnectable:         false,
+		conn:                  conn,
+		expire:                time.Now().Unix() + 3600,
+		connectionEstablished: nil}, nil
 }
 
 func (t *TCPClientTransport) Send(msg *Message) error {
@@ -333,28 +339,32 @@ func (t *TCPClientTransport) Send(msg *Message) error {
 	}
 
 	for i := 0; i < 2; i++ {
-		if t.conn == nil {
+		if t.conn == nil && t.reconnectable {
 			conn, err := net.Dial("tcp", t.addr)
 			if err != nil {
 				zap.L().Error("Fail to connect tcp server", zap.String("addr", t.addr))
 				return err
+			} else {
+				zap.L().Info("Succeed to connect tcp server", zap.String("addr", t.addr))
 			}
 			t.conn = conn
+			if t.connectionEstablished != nil {
+				t.connectionEstablished(conn)
+			}
 		}
-		_, err := t.conn.Write(b)
+		if t.conn == nil {
+			continue
+		}
+		n, err := t.conn.Write(b)
 		if err == nil {
-			zap.L().Debug("Succeed to send message to server", zap.String("addr", t.addr))
+			zap.L().Debug("Succeed to send message to TCP server", zap.String("addr", t.addr), zap.Int("bytesWritten", n))
 			return nil
 		}
-		zap.L().Error("Fail to send message to server", zap.String("addr", t.addr))
-		if t.reconnectable {
-			t.conn.Close()
-			t.conn = nil
-		} else {
-			break
-		}
+		zap.L().Warn("Fail to send message to TCP server at this time, try it again", zap.String("addr", t.addr))
+		t.conn.Close()
+		t.conn = nil
 	}
-	zap.L().Error("Fail to send message to tcp server", zap.String("addr", t.addr))
+	zap.L().Error("Fail to send message to TCP server", zap.String("addr", t.addr))
 	return fmt.Errorf("fail to send message to %s", t.addr)
 }
 
