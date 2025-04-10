@@ -315,7 +315,7 @@ func (rb *RoundRobinBackend) Send(msg *Message) error {
 
 func (rb *RoundRobinBackend) GetAddress() string {
 	rb.Lock()
-	rb.Unlock()
+	defer rb.Unlock()
 
 	r := "RoundRobin://"
 	for index, backend := range rb.backends {

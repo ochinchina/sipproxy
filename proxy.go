@@ -120,6 +120,7 @@ func (p *MyName) isMyMessage(msg *Message) bool {
 
 type Proxy struct {
 	myName               *MyName
+	localAddress         string
 	keepNextHopRoute     bool
 	preConfigRoute       *PreConfigRoute
 	resolver             *PreConfigHostResolver
@@ -136,6 +137,7 @@ type Proxy struct {
 
 func NewProxy(name string,
 	dialogExpire int64,
+	localAddress string,
 	keepNextHopRoute bool,
 	preConfigRoute *PreConfigRoute,
 	resolver *PreConfigHostResolver,
@@ -144,6 +146,7 @@ func NewProxy(name string,
 	mustRecordRoute bool) *Proxy {
 
 	proxy := &Proxy{myName: NewMyName(name),
+		localAddress:         localAddress,
 		keepNextHopRoute:     keepNextHopRoute,
 		preConfigRoute:       preConfigRoute,
 		resolver:             resolver,
@@ -221,7 +224,7 @@ func (p *Proxy) receiveAndProcessMessage() {
 			if err == nil {
 				port_i, err := strconv.Atoi(port)
 				if err == nil {
-					trans, err := p.clientTransMgr.GetTransport("tcp", host, port_i, "")
+					trans, err := p.clientTransMgr.GetTransport("tcp", host, port_i, p.localAddress, "")
 					if err == nil {
 						trans.primary, _ = NewTCPClientTransportWithConn(conn)
 					}
@@ -253,7 +256,7 @@ func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 		if err == nil {
 			transId, err := msg.GetClientTransaction()
 			if err == nil {
-				trans, err := p.clientTransMgr.GetTransport("tcp", host, port, transId)
+				trans, err := p.clientTransMgr.GetTransport("tcp", host, port, p.localAddress, transId)
 				if err == nil {
 					trans.primary, _ = NewTCPClientTransportWithConn(rawMessage.TcpConn)
 				}
@@ -321,7 +324,7 @@ func (p *Proxy) getBackendOfResponse(addr string, msg *Message) (Backend, error)
 		return backendWithParent.backend, nil
 	}
 
-	zap.L().Warn("Fail to find backend by address", zap.String("backendAddr", addr))
+	zap.L().Warn("Fail to find backend by address for response", zap.String("address", addr))
 
 	transId, err := msg.GetClientTransaction()
 	if err != nil {
@@ -518,7 +521,7 @@ func (p *Proxy) findTransportByBackendAddr(addr string) (ServerTransport, error)
 	if backendWithParent, ok := p.backends[addr]; ok {
 		proxyItem := p.findProxyItemByRoundrobinBackend(backendWithParent.parent)
 		if proxyItem == nil {
-			zap.L().Warn("Fail to find backend by address", zap.String("backendAddr", addr))
+			zap.L().Warn("Fail to find backend by address for backend", zap.String("backendAddr", addr))
 		} else {
 			return proxyItem.transports[0], nil
 		}
@@ -618,7 +621,7 @@ func (p *Proxy) getNextReponseHop(msg *Message) (host string, port int, transpor
 }
 
 func (p *Proxy) findClientTransport(host string, port int, transport string, transId string) (ClientTransport, error) {
-	trans, err := p.clientTransMgr.GetTransport(transport, host, port, transId)
+	trans, err := p.clientTransMgr.GetTransport(transport, host, port, p.localAddress, transId)
 	if err == nil && trans.primary == nil {
 		serverTrans, ok := p.selfLearnRoute.GetRoute(host)
 		if ok {
@@ -658,6 +661,8 @@ func (p *Proxy) sendMessage(host string, port int, transport string, msg *Messag
 func NewProxyItem(address string,
 	udpPort int,
 	tcpPort int,
+	backendLocalAddress string,
+	backendLocalPort int,
 	backends []string,
 	dests []string,
 	receivedSupport bool,
@@ -689,7 +694,7 @@ func NewProxyItem(address string,
 		proxyItem.connectionEstablished(conn, receivedSupport, selfLearnRoute)
 	}
 
-	proxyItem.backend, _ = CreateRoundRobinBackend(net.JoinHostPort(address, "0"), backends, connectionEstablished)
+	proxyItem.backend, _ = CreateRoundRobinBackend(net.JoinHostPort(backendLocalAddress, strconv.Itoa(backendLocalPort)), backends, connectionEstablished)
 
 	return proxyItem, nil
 }

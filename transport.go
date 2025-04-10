@@ -135,6 +135,7 @@ type UDPClientTransport struct {
 
 type TCPClientTransport struct {
 	addr                  string
+	localAddress          string
 	reconnectable         bool
 	conn                  net.Conn
 	expire                int64
@@ -144,13 +145,13 @@ type TCPClientTransport struct {
 var SupportedProtocol = map[string]string{"udp": "udp", "tcp": "tcp"}
 
 // NewUDPClientTransport create a UDP client transport with host and port
-func NewUDPClientTransport(host string, port int) (*UDPClientTransport, error) {
-	raddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", host, port))
+func NewUDPClientTransport(host string, port int, localAddress string) (*UDPClientTransport, error) {
+	raddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		zap.L().Error("Fail to resolve udp host address", zap.String("host", host), zap.Int("port", port), zap.String("error", err.Error()))
 		return nil, err
 	}
-	laddr, _ := net.ResolveUDPAddr("udp", ":0")
+	laddr, _ := net.ResolveUDPAddr("udp", net.JoinHostPort(localAddress, "0"))
 	return &UDPClientTransport{conn: nil, localAddr: laddr, remoteAddr: raddr}, nil
 }
 
@@ -213,7 +214,7 @@ func NewClientTransportMgr(connectionEstablished ConnectionEstablished) *ClientT
 }
 
 // GetTransport Get the client ransport by the protocol, host and port
-func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int, transId string) (*FailOverClientTransport, error) {
+func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int, localAddress string, transId string) (*FailOverClientTransport, error) {
 	c.Lock()
 	defer c.Unlock()
 
@@ -231,7 +232,7 @@ func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int
 		zap.L().Info("get client by full address", zap.String("fullAddr", fullAddr))
 		return trans, nil
 	}
-	trans, err := c.createClientTransport(protocol, host, port)
+	trans, err := c.createClientTransport(protocol, host, port, localAddress)
 	if err != nil {
 		zap.L().Info("fail to client by full address", zap.String("fullAddr", fullAddr))
 		return nil, err
@@ -262,11 +263,11 @@ func (c *ClientTransportMgr) getFullAddr(protocol string, host string, port int,
 	return fullAddr
 }
 
-func (c *ClientTransportMgr) createClientTransport(protocol string, host string, port int) (*FailOverClientTransport, error) {
+func (c *ClientTransportMgr) createClientTransport(protocol string, host string, port int, localAddress string) (*FailOverClientTransport, error) {
 	var client ClientTransport = nil
 	var err error = nil
 	if protocol == "udp" {
-		client, err = NewUDPClientTransport(host, port)
+		client, err = NewUDPClientTransport(host, port, localAddress)
 		if err == nil {
 			return NewFailOverClientTransport(client, nil), nil
 		} else {
@@ -277,7 +278,7 @@ func (c *ClientTransportMgr) createClientTransport(protocol string, host string,
 		if trans, ok := c.transports[addr]; ok {
 			client = trans.secondary
 		} else {
-			client, err = NewTCPClientTransport(host, port, c.connectionEstablished)
+			client, err = NewTCPClientTransport(host, port, localAddress, c.connectionEstablished)
 			if err == nil {
 				c.transports[addr] = NewFailOverClientTransport(nil, client)
 			} else {
@@ -312,9 +313,10 @@ func (c *ClientTransportMgr) cleanExpiredTransport() {
 }
 
 // NewTCPClientTransport create a TCP client transport with the specified host and port
-func NewTCPClientTransport(host string, port int, connectionEstablished ConnectionEstablished) (*TCPClientTransport, error) {
+func NewTCPClientTransport(host string, port int, localAddress string, connectionEstablished ConnectionEstablished) (*TCPClientTransport, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	return &TCPClientTransport{addr: addr,
+		localAddress:          localAddress,
 		reconnectable:         true,
 		conn:                  nil,
 		expire:                0,
@@ -340,7 +342,10 @@ func (t *TCPClientTransport) Send(msg *Message) error {
 
 	for i := 0; i < 2; i++ {
 		if t.conn == nil && t.reconnectable {
-			conn, err := net.Dial("tcp", t.addr)
+			laddr, _ := net.ResolveTCPAddr("tcp", net.JoinHostPort(t.localAddress, "0"))
+			raddr, _ := net.ResolveTCPAddr("tcp", t.addr)
+			zap.L().Info("Try to connect TCP server", zap.String("addr", t.addr), zap.String("localAddress", t.localAddress))
+			conn, err := net.DialTCP("tcp", laddr, raddr)
 			if err != nil {
 				zap.L().Error("Fail to connect tcp server", zap.String("addr", t.addr))
 				return err
