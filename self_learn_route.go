@@ -1,10 +1,14 @@
 package main
 
 import (
+	"sync"
+
 	"go.uber.org/zap"
 )
 
 type SelfLearnRoute struct {
+	sync.Mutex
+
 	// map between destination ip/host and local server transport
 	route map[string]ServerTransport
 }
@@ -14,6 +18,9 @@ func NewSelfLearnRoute() *SelfLearnRoute {
 }
 
 func (sl *SelfLearnRoute) AddRoute(ip string, transport ServerTransport) {
+	sl.Lock()
+	defer sl.Unlock()
+
 	old, ok := sl.route[ip]
 	if ok && sl.isSameTransport(old, transport) {
 		return
@@ -29,9 +36,13 @@ func (sl *SelfLearnRoute) isSameTransport(transport1 ServerTransport, transport2
 }
 
 func (sl *SelfLearnRoute) GetRoute(ip string) (ServerTransport, bool) {
+	sl.Lock()
+	defer sl.Unlock()
+
 	transport, ok := sl.route[ip]
 	if ok {
 		zap.L().Info("Succeed to get route for ip", zap.String("ip", ip), zap.String("protocol", transport.GetProtocol()), zap.String("addr", transport.GetAddress()), zap.Int("port", transport.GetPort()))
 	}
 	return transport, ok
 }
+
