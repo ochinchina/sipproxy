@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 type ViaParam struct {
@@ -167,6 +169,21 @@ func CreateViaParam(transport string, host string, port int) *ViaParam {
 		Params:          make([]KeyValue, 0)}
 }
 
+// CreateVia Create Via header with specific transport, host and port
+// The transport should be one of "UDP", "TCP", "TLS", etc.
+func CreateVia(transport string, host string, port int) (*Via, error) {
+	viaParam := CreateViaParam(strings.ToUpper(transport), host, port)
+	branch, err := CreateBranch()
+	if err != nil {
+		zap.L().Error("Fail to create branch parameter")
+		return nil, err
+	}
+	viaParam.SetBranch(branch)
+	via := NewVia()
+	via.AddViaParam(viaParam)
+	return via, nil
+}
+
 func parseViaParam(viaParam string) (*ViaParam, error) {
 	t := strings.Split(viaParam, ";")
 	sentInfo := strings.Fields(t[0])
@@ -210,3 +227,4 @@ func parseViaParam(viaParam string) (*ViaParam, error) {
 	return via, nil
 
 }
+

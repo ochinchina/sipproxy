@@ -12,12 +12,12 @@ func TestIsMyMessage(t *testing.T) {
   addr: "127.0.0.1:8899"
 proxies:
 - name: .+
+  no-received: true
   listens:
   - address: 192.168.0.25
     udp-port: 5060
-    no-received: true
     backends:
-    - udp://nls-lrf:5061
+    - address: udp://nls-lrf:5061
 `
 	msg_txt := `INVITE urn:service:sos SIP/2.0
 Via: SIP/2.0/UDP 192.168.0.42:5061;branch=z9hG4bK-343538-f5cc2dfbdfbc60a7ee8cb62d931fec35,SIP/2.0/UDP 10.166.226.87:5066;nwkintf=6;realm=realm-mw;recvdsrvport=5060;recvdsrvip=10.166.226.86;mav-udp-rport=5066;received=10.166.226.87;branch=z9hG4bKmavodi-0-1a3-e30-1-2000000-89e0c9-35-1e36-2799083920-30247
@@ -68,12 +68,12 @@ func TestIsMyMessage2(t *testing.T) {
   addr: "127.0.0.1:8899"
 proxies:
 - name: .+
+  no-received: true
   listens:
   - address: 192.168.0.25
     udp-port: 5060
-    no-received: true
     backends:
-    - udp://nls-lrf:5061
+    - address: udp://nls-lrf:5061
 `
 	msg_txt := `INVITE sip:194;phone-context=ims.mnc089.mcc724.3gppnetwork.org@ims.mnc089.mcc724.3gppnetwork.org;user=phone SIP/2.0
 Via: SIP/2.0/UDP 10.234.126.14:5060;branch=z9hG4bKaqg951gs67674661gs8q79v68;Role=3;Hpt=8e52_16;TRC=3bf-ffffffff;srti=s3_2
@@ -122,3 +122,4 @@ test`
 	}
 
 }
+

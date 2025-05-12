@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,7 +53,8 @@ func (bm *BackendChangeListenerMgr) HandleBackendRemoved(backend Backend, parent
 }
 
 type Backend interface {
-	Send(msg *Message) error
+	// Send message to backend
+	Send(msg *Message) (Backend, error)
 	GetAddress() string
 	Close()
 }
@@ -74,10 +76,10 @@ type TCPBackend struct {
 	localAddr             string
 	backendAddr           string
 	conn                  net.Conn
-	connectionEstablished ConnectionEstablished
+	connectionEstablished ConnectionEstablishedFunc
 }
 
-type ConnectionEstablished func(conn net.Conn)
+type ConnectionEstablishedFunc func(conn net.Conn)
 
 var dynamicHostResolver *DynamicHostResolver
 
@@ -85,14 +87,36 @@ func init() {
 	dynamicHostResolver = NewDynamicHostResolver(2)
 }
 
-func CreateRoundRobinBackend(localhostport string, addresses []string, connectionEstablished ConnectionEstablished) (*RoundRobinBackend, error) {
-	zap.L().Info("create round robin backend", zap.String("localhostport", localhostport), zap.Strings("addresses", addresses))
-	if len(addresses) <= 0 {
-		return nil, fmt.Errorf("no address")
+func createViaConfig(via string) *ViaConfig {
+	u, err := url.Parse(via)
+	if err != nil {
+		return nil
+	}
+	// check if the scheme is tcp or udp
+	if u.Scheme != "tcp" && u.Scheme != "udp" {
+		return nil
+	}
+	host, s_port, _ := net.SplitHostPort(u.Host)
+	port, err := strconv.Atoi(s_port)
+	if err != nil {
+		return nil
+	}
+	return &ViaConfig{
+		Address:  host,
+		Port:     port,
+		Protocol: u.Scheme,
+	}
+}
+
+func CreateRoundRobinBackend(backends []BackendConfig, connectionEstablished ConnectionEstablishedFunc) (*RoundRobinBackend, error) {
+	zap.L().Info("create round robin backend", zap.Any("backends", backends))
+	if len(backends) <= 0 {
+		return nil, fmt.Errorf("no backends")
 	}
 	rrBackend := NewRoundRobinBackend()
-	for _, address := range addresses {
-		u, err := url.Parse(address)
+	for _, backendConf := range backends {
+		localBindAddress := net.JoinHostPort(backendConf.LocalAddress, "0")
+		u, err := url.Parse(backendConf.Address)
 		if err != nil {
 			return nil, err
 		}
@@ -107,9 +131,9 @@ func CreateRoundRobinBackend(localhostport string, addresses []string, connectio
 					var backend Backend
 					var err error
 					if u.Scheme == "udp" {
-						backend, err = NewUDPBackend(localhostport, u.Host)
+						backend, err = NewUDPBackend(localBindAddress, u.Host)
 					} else {
-						backend, err = NewTCPBackend(localhostport, u.Host, connectionEstablished)
+						backend, err = NewTCPBackend(localBindAddress, u.Host, connectionEstablished)
 					}
 					if err != nil {
 						return nil, err
@@ -119,7 +143,7 @@ func CreateRoundRobinBackend(localhostport string, addresses []string, connectio
 					zap.L().Info("add host to dynamic resolver", zap.String("host", host))
 
 					dynamicHostResolver.ResolveHost(host, func(hostname string, newIPs []string, removedIPs []string) {
-						rrBackend.hostIPChanged(u.Scheme, localhostport, hostname, newIPs, removedIPs, port, connectionEstablished)
+						rrBackend.hostIPChanged(u.Scheme, localBindAddress, hostname, newIPs, removedIPs, port, connectionEstablished)
 					})
 				}
 			}
@@ -149,25 +173,25 @@ func NewUDPBackend(localhostport string, hostport string) (*UDPBackend, error) {
 	return b, nil
 }
 
-func (b *UDPBackend) Send(msg *Message) error {
+func (b *UDPBackend) Send(msg *Message) (Backend, error) {
 	bytes, err := msg.Bytes()
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	n, err := b.udpConn.WriteToUDP(bytes, b.backendAddr)
 	if err == nil {
 		zap.L().Info("Succeed send message to backend", zap.String("address", b.backendAddr.String()), zap.Int("bytes", n))
+		return b, err
 	} else {
 		zap.L().Error("Fail to send message to backend", zap.String("address", b.backendAddr.String()))
+		return nil, err
 	}
-
-	return err
 }
 
 func (b *UDPBackend) GetAddress() string {
-	return b.backendAddr.String()
+	return fmt.Sprintf("udp://%s", b.backendAddr.String())
 }
 
 func (b *UDPBackend) Close() {
@@ -179,7 +203,9 @@ func (b *UDPBackend) Close() {
 	}
 }
 
-func NewTCPBackend(localhostport string, hostport string, connectionEstablished ConnectionEstablished) (*TCPBackend, error) {
+// / NewTCPBackend creates a TCP backend with the given local and remote addresses.
+// / The local address is used to bind the connection, and the remote address is the destination.
+func NewTCPBackend(localhostport string, hostport string, connectionEstablished ConnectionEstablishedFunc) (*TCPBackend, error) {
 	zap.L().Info("create tcp backend", zap.String("localhostport", localhostport), zap.String("hostport", hostport))
 	return &TCPBackend{localAddr: localhostport,
 		backendAddr:           hostport,
@@ -187,10 +213,10 @@ func NewTCPBackend(localhostport string, hostport string, connectionEstablished 
 		connectionEstablished: connectionEstablished}, nil
 }
 
-func (t *TCPBackend) Send(msg *Message) error {
+func (t *TCPBackend) Send(msg *Message) (Backend, error) {
 	b, err := msg.Bytes()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	zap.L().Info("send message to TCP backend with conn", zap.String("backendAddr", t.backendAddr), zap.Any("conn", t.conn))
@@ -208,13 +234,13 @@ func (t *TCPBackend) Send(msg *Message) error {
 		zap.L().Info("try to write message to TCP backend", zap.String("backendAddr", t.conn.RemoteAddr().String()), zap.String("localAddr", t.conn.LocalAddr().String()), zap.Int("bytesWritten", n))
 		if err == nil {
 			zap.L().Debug("Succeed to send message to backend", zap.String("backendAddr", t.backendAddr))
-			return nil
+			return t, nil
 		}
 		zap.L().Info("Fail to send message to backend", zap.String("backendAddr", t.backendAddr))
 		t.conn.Close()
 		t.conn = nil
 	}
-	return fmt.Errorf("fail to send message to backend %s", t.backendAddr)
+	return nil, fmt.Errorf("fail to send message to backend %s", t.backendAddr)
 }
 
 func (t *TCPBackend) connect() error {
@@ -231,7 +257,7 @@ func (t *TCPBackend) connect() error {
 }
 
 func (t *TCPBackend) GetAddress() string {
-	return t.backendAddr
+	return fmt.Sprintf("tcp://%s", t.backendAddr)
 }
 
 func (t *TCPBackend) Close() {
@@ -295,22 +321,27 @@ func (rb *RoundRobinBackend) GetAllBackend() map[string]Backend {
 	return r
 }
 
-func (rb *RoundRobinBackend) Send(msg *Message) error {
+func (rb *RoundRobinBackend) Send(msg *Message) (Backend, error) {
 	index, err := rb.getNextBackendIndex()
 	if err != nil {
 		zap.L().Error("Fail to send message", zap.String("error", err.Error()))
-		return errors.New("fail to get next backend")
+		return nil, errors.New("fail to get next backend")
 	}
 
 	n := rb.getBackendCount()
+
 	for ; n > 0; n-- {
 		backend, err := rb.getBackend(index)
 		index++
-		if err == nil {
-			return backend.Send(msg)
+		if err == nil && backend != nil {
+			r, err := backend.Send(msg)
+			if err == nil {
+				return r, err
+			}
 		}
 	}
-	return errors.New("fail to send msg to all the backend")
+
+	return nil, errors.New("fail to send msg to all the backend")
 }
 
 func (rb *RoundRobinBackend) GetAddress() string {
@@ -364,7 +395,12 @@ func (rb *RoundRobinBackend) AddBackendChangeListener(listener BackendChangeList
 	}
 }
 
-func (rb *RoundRobinBackend) hostIPChanged(protocol string, localhostport, hostname string, newIPs []string, removedIPs []string, port string, connectionEstablished ConnectionEstablished) {
+func (rb *RoundRobinBackend) hostIPChanged(protocol string,
+	localhostport, hostname string,
+	newIPs []string,
+	removedIPs []string,
+	port string,
+	connectionEstablished ConnectionEstablishedFunc) {
 	for _, ip := range newIPs {
 		zap.L().Info("find a new IP for host", zap.String("host", hostname), zap.String("ip", ip))
 		hostport := rb.createHostPort(ip, port)
@@ -407,59 +443,83 @@ type ExpireBackend struct {
 	backend Backend
 	expire  time.Time
 }
-type DialogBasedBackend struct {
+type SessionBasedBackend struct {
 	timeout time.Duration
 	// map between dialog and the backend
 	backends      map[string]*ExpireBackend
 	nextCleanTime time.Time
 }
 
-func NewDialogBasedBackend(timeoutSeconds int64) *DialogBasedBackend {
+func NewSessionBasedBackend(timeoutSeconds int64) *SessionBasedBackend {
 	zap.L().Info("set the dialog timeout ", zap.Int64("timeout", timeoutSeconds))
 
-	return &DialogBasedBackend{timeout: time.Duration(timeoutSeconds) * time.Second,
+	return &SessionBasedBackend{timeout: time.Duration(timeoutSeconds) * time.Second,
 		backends:      make(map[string]*ExpireBackend),
 		nextCleanTime: time.Now().Add(time.Duration(timeoutSeconds) * time.Second)}
 }
 
-func (dbb *DialogBasedBackend) GetBackend(dialog string) (Backend, error) {
-	if value, ok := dbb.backends[dialog]; ok {
+// GetBackend returns the backend related with the sessionId
+// and check if the backend is expired. If the backend is expired, it will be removed from the map.
+func (dbb *SessionBasedBackend) GetBackend(sessionId string) (Backend, error) {
+	if value, ok := dbb.backends[sessionId]; ok {
 		if value.expire.After(time.Now()) {
 			return value.backend, nil
 		}
-		delete(dbb.backends, dialog)
+		delete(dbb.backends, sessionId)
 	}
-	return nil, fmt.Errorf("no backend related with dialog %s", dialog)
+	return nil, fmt.Errorf("no backend related with dialog %s", sessionId)
 
 }
 
-func (dbb *DialogBasedBackend) AddBackend(dialog string, backend Backend, expireSeconds int) {
+// AddBackend adds a backend for the sessionId and set the expire time
+// for the backend. The expire time is set to the timeout value if it is greater than the timeout value.
+func (dbb *SessionBasedBackend) AddBackend(sessionId string, backend Backend, expireSeconds int) {
 	timeout := dbb.timeout
-	if float64(expireSeconds) > timeout.Seconds() {
+	if float64(expireSeconds) > timeout.Seconds() || expireSeconds <= 0 {
 		timeout = time.Duration(expireSeconds) * time.Second
 	}
 	expire := time.Now().Add(timeout)
-	dbb.backends[dialog] = &ExpireBackend{backend: backend, expire: expire}
-	if dbb.nextCleanTime.Before(time.Now()) {
-		dbb.nextCleanTime = expire
-		dbb.cleanExpiredDialog()
+	dbb.backends[sessionId] = &ExpireBackend{backend: backend, expire: expire}
+	zap.L().Info("add backend for session", zap.String("sessionId", sessionId), zap.String("expire", expire.String()))
+	dbb.cleanExpiredSession()
+}
+
+// RemoveSession removes the backend related with the sessionId
+// and closes the backend connection.
+func (dbb *SessionBasedBackend) RemoveSession(sessionId string) {
+	delete(dbb.backends, sessionId)
+}
+
+func (dbb *SessionBasedBackend) cleanExpiredSession() {
+	if dbb.nextCleanTime.After(time.Now()) {
+		return
 	}
-}
+	dbb.nextCleanTime = time.Now().Add(dbb.timeout)
 
-func (dbb *DialogBasedBackend) RemoveDialog(dialog string) {
-	delete(dbb.backends, dialog)
-}
-
-func (dbb *DialogBasedBackend) cleanExpiredDialog() {
-	expiredDialogs := make(map[string]string)
+	// clean expired sessions
+	expiredSessions := make(map[string]string)
 	for k, v := range dbb.backends {
 		if v.expire.Before(time.Now()) {
-			expiredDialogs[k] = k
+			expiredSessions[k] = k
 		}
 	}
 
-	for k := range expiredDialogs {
+	for k := range expiredSessions {
 		delete(dbb.backends, k)
 	}
+}
+
+func getAllBackendAddresses(backend Backend) []string {
+	r := make([]string, 0)
+
+	if v, ok := backend.(*RoundRobinBackend); ok {
+		for _, t := range v.backends {
+			r = append(r, t.GetAddress())
+		}
+	} else {
+		r = append(r, backend.GetAddress())
+	}
+
+	return r
 }
 

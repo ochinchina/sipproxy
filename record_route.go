@@ -125,3 +125,17 @@ func (r *RecRoute) String() string {
 	}
 	return buf.String()
 }
+
+// CreateRecordRoute Create a RecordRoute header with the given address and port
+// The address should be a valid SIP URI, e.g., "sip:example.com"
+func CreateRecordRoute(address string, port int) *RecordRoute {
+	addr := NewAddrSpec()
+	addr.sipURI = &SIPURI{Scheme: "sip", Host: address, port: port}
+	addr.sipURI.AddParameter("lr", "")
+	nameAddr := &NameAddr{DisplayName: "", Addr: addr}
+	recRoute := NewRecRoute(nameAddr)
+	recordRoute := NewRecordRoute()
+	recordRoute.AddRecRoute(recRoute)
+	return recordRoute
+}
+

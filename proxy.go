@@ -20,9 +20,8 @@ type BackendChangeEvent struct {
 type ProxyItem struct {
 	sync.Mutex
 	transports []ServerTransport
+	viaConfig  *ViaConfig
 	backend    *RoundRobinBackend
-	dests      []string
-	defRoute   bool
 	msgHandler MessageHandler
 }
 
@@ -120,7 +119,8 @@ func (p *MyName) isMyMessage(msg *Message) bool {
 
 type Proxy struct {
 	myName               *MyName
-	localAddress         string
+	listenConfigs        []ListenConfig
+	receivedSupport      bool
 	keepNextHopRoute     bool
 	preConfigRoute       *PreConfigRoute
 	resolver             *PreConfigHostResolver
@@ -131,13 +131,13 @@ type Proxy struct {
 	msgChannel           chan *RawMessage
 	backendChangeChannel chan *BackendChangeEvent
 	connAcceptedChannel  chan net.Conn
-	backends             map[string]*BackendWithParent
-	dialogBasedBackends  *DialogBasedBackend
+	backends             map[string][]*BackendWithParent
+	sessionBackends      *SessionBasedBackend
 }
 
 func NewProxy(name string,
 	dialogExpire int64,
-	localAddress string,
+	listenConfigs []ListenConfig,
 	keepNextHopRoute bool,
 	preConfigRoute *PreConfigRoute,
 	resolver *PreConfigHostResolver,
@@ -146,7 +146,8 @@ func NewProxy(name string,
 	mustRecordRoute bool) *Proxy {
 
 	proxy := &Proxy{myName: NewMyName(name),
-		localAddress:         localAddress,
+		listenConfigs:        listenConfigs,
+		receivedSupport:      receivedSupport,
 		keepNextHopRoute:     keepNextHopRoute,
 		preConfigRoute:       preConfigRoute,
 		resolver:             resolver,
@@ -157,30 +158,30 @@ func NewProxy(name string,
 		msgChannel:           make(chan *RawMessage, 10000),
 		backendChangeChannel: make(chan *BackendChangeEvent, 1000),
 		connAcceptedChannel:  make(chan net.Conn),
-		backends:             make(map[string]*BackendWithParent),
-		dialogBasedBackends:  NewDialogBasedBackend(dialogExpire)}
+		backends:             make(map[string][]*BackendWithParent),
+		sessionBackends:      NewSessionBasedBackend(dialogExpire)}
+
+	for _, listenConf := range listenConfigs {
+		item, err := NewProxyItem(listenConf, receivedSupport, proxy, selfLearnRoute, proxy)
+		if err == nil {
+			proxy.items = append(proxy.items, item)
+		}
+	}
 
 	connectionEstablished := func(conn net.Conn) {
-		serverTransport := NewTCPServerTransportWithConn(conn, receivedSupport, selfLearnRoute)
+		serverTransport := NewTCPServerTransportWithConn(conn, proxy.receivedSupport, selfLearnRoute, nil)
 		serverTransport.Start(proxy)
 	}
 
-	proxy.clientTransMgr = NewClientTransportMgr(connectionEstablished)
+	proxy.clientTransMgr = NewClientTransportMgr(selfLearnRoute, connectionEstablished)
 
 	go proxy.receiveAndProcessMessage()
 	return proxy
 }
 
-func (p *Proxy) AddItem(item *ProxyItem) {
-	if item.backend != nil {
-		item.backend.AddBackendChangeListener(p)
-	}
-	p.items = append(p.items, item)
-}
-
 func (p *Proxy) Start() error {
 	for _, item := range p.items {
-		err := item.start()
+		err := item.Start()
 		if err != nil {
 			return err
 		}
@@ -208,23 +209,39 @@ func (p *Proxy) receiveAndProcessMessage() {
 		case rawMsg := <-p.msgChannel:
 			msg, err := p.handleRawMessage(rawMsg)
 			if err == nil {
-				p.handleDialog(rawMsg.PeerAddr, rawMsg.PeerPort, msg)
-				p.HandleMessage(msg)
+
+				p.handleSession(rawMsg.From.GetProtocol(), rawMsg.PeerAddr, rawMsg.PeerPort, msg)
+				p.handleMessage(rawMsg.From.GetProtocol(), msg, rawMsg.Backend, rawMsg.Via)
 			}
 		case backendChangeEvent := <-p.backendChangeChannel:
 			backend := backendChangeEvent.backend
 			switch backendChangeEvent.action {
 			case "add":
-				p.backends[backend.GetAddress()] = &BackendWithParent{backend: backend, parent: backendChangeEvent.parent}
+				if p.backends[backend.GetAddress()] == nil {
+					p.backends[backend.GetAddress()] = make([]*BackendWithParent, 0)
+				}
+				p.backends[backend.GetAddress()] = append(p.backends[backend.GetAddress()], &BackendWithParent{backend: backend, parent: backendChangeEvent.parent})
 			case "remove":
-				delete(p.backends, backend.GetAddress())
+				if backendsWithParent, ok := p.backends[backend.GetAddress()]; ok {
+					for index, item := range backendsWithParent {
+						if item.backend == backend && item.parent == backendChangeEvent.parent {
+							// remove the backend from the list
+							p.backends[backend.GetAddress()] = append(backendsWithParent[:index], backendsWithParent[index+1:]...)
+							break
+						}
+					}
+					if len(p.backends[backend.GetAddress()]) == 0 {
+						// delete the backend from the map
+						delete(p.backends, backend.GetAddress())
+					}
+				}
 			}
 		case conn := <-p.connAcceptedChannel:
 			host, port, err := net.SplitHostPort(conn.RemoteAddr().String())
 			if err == nil {
 				port_i, err := strconv.Atoi(port)
 				if err == nil {
-					trans, err := p.clientTransMgr.GetTransport("tcp", host, port_i, p.localAddress, "")
+					trans, err := p.clientTransMgr.GetTransport("tcp", host, port_i, "")
 					if err == nil {
 						trans.primary, _ = NewTCPClientTransportWithConn(conn)
 					}
@@ -254,9 +271,10 @@ func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 		}
 		zap.L().Info("receive a message from tcp", zap.String("host", host), zap.Int("port", port))
 		if err == nil {
+			// create a transport for transaction in tcp connection
 			transId, err := msg.GetClientTransaction()
 			if err == nil {
-				trans, err := p.clientTransMgr.GetTransport("tcp", host, port, p.localAddress, transId)
+				trans, err := p.clientTransMgr.GetTransport("tcp", host, port, transId)
 				if err == nil {
 					trans.primary, _ = NewTCPClientTransportWithConn(rawMessage.TcpConn)
 				}
@@ -298,6 +316,8 @@ func (p *Proxy) tryRemoveTopRoute(rawMessage *RawMessage) {
 	}
 }
 
+// isSameAddress check if the two addresses are the same
+// if the two addresses are the same, return true, otherwise return false
 func (p *Proxy) isSameAddress(addr1 string, addr2 string) bool {
 	if addr1 == addr2 {
 		return true
@@ -319,58 +339,66 @@ func (p *Proxy) isSameAddress(addr1 string, addr2 string) bool {
 }
 
 func (p *Proxy) getBackendOfResponse(addr string, msg *Message) (Backend, error) {
-	backendWithParent, ok := p.backends[addr]
-	if ok {
-		return backendWithParent.backend, nil
+	backendsWithParent, ok := p.backends[addr]
+	if ok && len(backendsWithParent) > 0 {
+		return backendsWithParent[0].backend, nil
 	}
-
-	zap.L().Warn("Fail to find backend by address for response", zap.String("address", addr))
 
 	transId, err := msg.GetClientTransaction()
 	if err != nil {
 		return nil, err
 	}
-	backend, err := p.dialogBasedBackends.GetBackend(transId)
-	if err != nil {
-		zap.L().Warn("Fail to find backend by transaction", zap.String("clientTransaction", transId))
+	backend, err := p.sessionBackends.GetBackend(transId)
+	if err == nil {
+		zap.L().Info("Succeed to find backend by client transaction", zap.String("clientTransaction", transId), zap.String("backendAddr", backend.GetAddress()))
 	}
 
 	if msg.IsFinalResponse() {
-		p.dialogBasedBackends.RemoveDialog(transId)
+		p.sessionBackends.RemoveSession(transId)
 	}
 	return backend, err
 
 }
 
-func (p *Proxy) handleDialog(peerAddr string, peerPort int, msg *Message) {
+func (p *Proxy) handleSession(protocol string, peerAddr string, peerPort int, msg *Message) {
 	if !msg.IsResponse() {
 		return
 	}
 
-	addr := net.JoinHostPort(peerAddr, strconv.Itoa(peerPort))
+	addr := fmt.Sprintf("%s://%s", protocol, net.JoinHostPort(peerAddr, strconv.Itoa(peerPort)))
 	backend, err := p.getBackendOfResponse(addr, msg)
 	if err != nil {
 		return
 	}
+
+	if msg.IsFinalResponse() {
+		transId, _ := msg.GetServerTransaction()
+		if transId != "" {
+			zap.L().Info("transaction is finished, remove backend by transId", zap.String("backendAddr", addr), zap.String("transId", transId))
+			p.sessionBackends.RemoveSession(transId)
+		}
+	}
+
 	if method, err := msg.GetMethod(); err == nil {
 		switch method {
 		case "INVITE":
 			dialog, _ := msg.GetDialog()
 			if dialog != "" {
 				zap.L().Info("dialog is bind to backend", zap.String("backendAddr", addr), zap.String("dialog", dialog))
-				p.dialogBasedBackends.AddBackend(dialog, backend, msg.GetExpires(0))
+				p.sessionBackends.AddBackend(dialog, backend, msg.GetExpires(0))
 			}
-		case "BYE":
+		case "BYE", "CANCEL":
 			dialog, _ := msg.GetDialog()
 			if dialog != "" {
 				zap.L().Info("dialog is closed", zap.String("backendAddr", addr), zap.String("dialog", dialog))
-				p.dialogBasedBackends.RemoveDialog(dialog)
+				p.sessionBackends.RemoveSession(dialog)
 			}
+
 		}
 	}
 }
 
-func (p *Proxy) HandleMessage(msg *Message) {
+func (p *Proxy) handleMessage(protocol string, msg *Message, backend Backend, viaConfig *ViaConfig) {
 	zap.L().Debug("Received a message", zap.String("host", msg.ReceivedFrom.GetAddress()), zap.Int("port", msg.ReceivedFrom.GetPort()), zap.String("message", msg.String()))
 	if msg.IsRequest() {
 		host, port, transport, err := p.getNextRequestHop(msg)
@@ -385,7 +413,7 @@ func (p *Proxy) HandleMessage(msg *Message) {
 			p.sendMessage(host, port, transport, msg)
 		} else if p.myName.isMyMessage(msg) {
 			zap.L().Info("it is my request")
-			p.sendToBackend(msg)
+			p.sendToBackend(protocol, msg, backend, viaConfig)
 		} else {
 			zap.L().Error("Not my message, fail to route the message")
 		}
@@ -394,12 +422,12 @@ func (p *Proxy) HandleMessage(msg *Message) {
 		host, port, transport, err := p.getNextReponseHop(msg)
 		// if the response of SUBSCRIBE to the backend
 		if method, err := msg.GetMethod(); err == nil && method == "SUBSCRIBE" {
-			addr := fmt.Sprintf("%s:%d", host, port)
-			if backendWithParent, ok := p.backends[addr]; ok {
-				if dialog, err := msg.GetDialog(); err == nil {
-					zap.L().Info("bind the dialog to the response", zap.String("dialog", dialog), zap.String("backend", backendWithParent.backend.GetAddress()))
+			addr := fmt.Sprintf("%s://%s", protocol, net.JoinHostPort(host, strconv.Itoa(port)))
+			if backendsWithParent, ok := p.backends[addr]; ok {
+				if dialog, err := msg.GetDialog(); err == nil && len(backendsWithParent) > 0 {
+					zap.L().Info("bind the dialog to the response", zap.String("dialog", dialog), zap.String("backend", backendsWithParent[0].backend.GetAddress()))
 
-					p.dialogBasedBackends.AddBackend(dialog, backendWithParent.backend, msg.GetExpires(0))
+					p.sessionBackends.AddBackend(dialog, backendsWithParent[0].backend, msg.GetExpires(0))
 				}
 			}
 		}
@@ -422,16 +450,10 @@ func (p *Proxy) HandleBackendRemoved(backend Backend, parent *RoundRobinBackend)
 }
 
 func (p *Proxy) addVia(msg *Message, transport ServerTransport) (*Via, error) {
-	viaParam := CreateViaParam(transport.GetProtocol(), transport.GetAddress(), transport.GetPort())
-	branch, err := CreateBranch()
-	if err != nil {
-		zap.L().Error("Fail to create branch parameter")
-		return nil, err
+	via, err := CreateVia(transport.GetProtocol(), transport.GetAddress(), transport.GetPort())
+	if err == nil {
+		msg.AddVia(via)
 	}
-	viaParam.SetBranch(branch)
-	via := NewVia()
-	via.AddViaParam(viaParam)
-	msg.AddVia(via)
 	return via, nil
 }
 
@@ -440,39 +462,70 @@ func (p *Proxy) addRecordRoute(msg *Message, transport ServerTransport) {
 	if _, err := msg.GetHeader("Record-Route"); err != nil && !p.mustRecordRoute {
 		return
 	}
-	addr := NewAddrSpec()
-	addr.sipURI = &SIPURI{Scheme: "sip", Host: transport.GetAddress(), port: transport.GetPort()}
-	addr.sipURI.AddParameter("lr", "")
-	nameAddr := &NameAddr{DisplayName: "", Addr: addr}
-	recRoute := NewRecRoute(nameAddr)
-	recordRoute := NewRecordRoute()
-	recordRoute.AddRecRoute(recRoute)
-	msg.AddRecordRoute(recordRoute)
 
+	msg.AddRecordRoute(CreateRecordRoute(transport.GetAddress(), transport.GetPort()))
 }
 
-func (p *Proxy) sendToBackend(msg *Message) {
+func (p *Proxy) sendToBackend(protocol string, msg *Message, preferBackend Backend, viaConfig *ViaConfig) {
 
-	backendItem := p.findBackendProxyItem()
-	if backendItem == nil {
+	backendItem := p.findBackendProxyItem(protocol)
+	if backendItem == nil && preferBackend == nil {
 		zap.L().Error("Fail to find the backend for my message", zap.String("message", msg.String()))
 	} else {
-		backend, transport, err := p.findBackendByDialog(msg)
+		// find the backend by dialog or transaction
+		backend, transport, err := p.findBackendByDialog(protocol, msg)
+
 		if err != nil {
+			// if no backend is found by dialog, find the backend by transaction
+			backend, transport, err = p.findBackendByTransaction(protocol, msg)
+		}
+
+		if err != nil && viaConfig != nil {
+			transport, _ = p.findTransportByViaConfig(viaConfig)
+		}
+
+		if backend == nil && preferBackend != nil {
+			backend = preferBackend
+			//transport, _ = p.findTransportByBackendAddr(backend.GetAddress(), protocol)
+		}
+
+		if transport == nil && backend != nil {
+			backendAddrs := getAllBackendAddresses(backend)
+			for _, addr := range backendAddrs {
+				transport, err = p.findTransportByBackendAddr(addr, protocol)
+				if err == nil {
+					break
+				}
+			}
+		}
+
+		if backend == nil && backendItem != nil {
 			backend = backendItem.backend
 			transport = backendItem.transports[0]
 		}
-		if transport == nil {
-			transport = backendItem.transports[0]
+		if transport == nil && backendItem != nil {
+			transport, _ = backendItem.FindTransport(func(t ServerTransport) bool {
+				return t.GetProtocol() == protocol
+			})
+			if transport == nil {
+				transport = backendItem.transports[0]
+			}
 		}
-		p.addVia(msg, transport)
-		p.addRecordRoute(msg, transport)
-		err = backend.Send(msg)
+		if transport != nil {
+			p.addVia(msg, transport)
+			p.addRecordRoute(msg, transport)
+		}
+		if backend == nil {
+			zap.L().Error("Fail to find backend for my message", zap.String("message", msg.String()))
+			return
+		}
+		backend, err = backend.Send(msg)
 		if err == nil {
-			transId, err := msg.GetClientTransaction()
+			zap.L().Debug("succeed to send the message to the backend", zap.String("backend", backend.GetAddress()), zap.String("message", msg.String()))
+			transId, err := msg.GetServerTransaction()
 			if err == nil {
-				zap.L().Debug("bind client transaction with backend", zap.String("trandId", transId), zap.String("backend", backend.GetAddress()))
-				p.dialogBasedBackends.AddBackend(transId, backend, msg.GetExpires(0))
+				zap.L().Info("bind server transaction with backend", zap.String("trandId", transId), zap.String("backend", backend.GetAddress()))
+				p.sessionBackends.AddBackend(transId, backend, msg.GetExpires(0))
 			}
 		} else {
 			zap.L().Error("Fail to send the message to the backend", zap.String("backend", backend.GetAddress()), zap.String("message", msg.String()))
@@ -481,7 +534,7 @@ func (p *Proxy) sendToBackend(msg *Message) {
 }
 
 // findBackendByDialog find the backend information by the message dialog
-func (p *Proxy) findBackendByDialog(msg *Message) (Backend, ServerTransport, error) {
+func (p *Proxy) findBackendByDialog(protocol string, msg *Message) (Backend, ServerTransport, error) {
 	method, err := msg.GetMethod()
 	if err != nil {
 		return nil, nil, err
@@ -497,51 +550,105 @@ func (p *Proxy) findBackendByDialog(msg *Message) (Backend, ServerTransport, err
 		return nil, nil, err
 	}
 
-	backend, err := p.dialogBasedBackends.GetBackend(dialog)
+	backend, err := p.sessionBackends.GetBackend(dialog)
 	var transport ServerTransport = nil
 	if err == nil {
-		zap.L().Info("find backend by dialog", zap.String("backendAddr", backend.GetAddress()), zap.String("dialog", dialog))
-		transport, _ = p.findTransportByBackendAddr(backend.GetAddress())
-	} else {
-		zap.L().Warn("Fail to find backend by dialog", zap.String("dialog", dialog), zap.String("error", err.Error()))
+		zap.L().Info("succeed to find backend by dialog", zap.String("backendAddr", backend.GetAddress()), zap.String("dialog", dialog))
+		transport, _ = p.findTransportByBackendAddr(backend.GetAddress(), protocol)
 	}
 	// remove the SUBSCRIBE initialized dialog if the Subscription-State is terminated in NOTIFY message
-	if method == "NOTIFY" {
+	if method == "NOTIFY" && backend != nil {
 		if v, err := msg.GetHeaderValue("Subscription-State"); err == nil {
 			if s, ok := v.(string); ok && s == "terminated" {
-				zap.L().Info("remove the dialog", zap.String("dialog", dialog))
-				p.dialogBasedBackends.RemoveDialog(dialog)
+				zap.L().Info("remove the dialog because the Subscription-State is terminated in NOTIFY message", zap.String("dialog", dialog))
+				p.sessionBackends.RemoveSession(dialog)
 			}
 		}
 	}
 	return backend, transport, err
 }
 
-func (p *Proxy) findTransportByBackendAddr(addr string) (ServerTransport, error) {
-	if backendWithParent, ok := p.backends[addr]; ok {
-		proxyItem := p.findProxyItemByRoundrobinBackend(backendWithParent.parent)
-		if proxyItem == nil {
-			zap.L().Warn("Fail to find backend by address for backend", zap.String("backendAddr", addr))
-		} else {
-			return proxyItem.transports[0], nil
-		}
+func (p *Proxy) findBackendByTransaction(protocol string, msg *Message) (Backend, ServerTransport, error) {
+	transId, err := msg.GetServerTransaction()
+	if err != nil {
+		return nil, nil, err
 	}
-	return nil, fmt.Errorf("fail to find backend by %s", addr)
 
+	backend, err := p.sessionBackends.GetBackend(transId)
+	if err == nil {
+		zap.L().Info("find backend by transaction", zap.String("backendAddr", backend.GetAddress()), zap.String("transId", transId))
+		transport, _ := p.findTransportByBackendAddr(backend.GetAddress(), protocol)
+		return backend, transport, nil
+	} else {
+		return nil, nil, fmt.Errorf("fail to find backend by transaction %s", transId)
+	}
 }
 
+func (p *Proxy) findTransportByViaConfig(viaConfig *ViaConfig) (ServerTransport, error) {
+	if viaConfig == nil {
+		return nil, fmt.Errorf("no via config")
+	}
+	for _, item := range p.items {
+		transport, err := item.FindTransport(func(transport ServerTransport) bool {
+			return transport.GetProtocol() == viaConfig.Protocol && transport.GetAddress() == viaConfig.Address && transport.GetPort() == viaConfig.Port
+		})
+		if err == nil {
+			zap.L().Info("succeed to find transport by via config", zap.String("viaConfig", viaConfig.String()))
+			return transport, err
+		}
+	}
+	return nil, fmt.Errorf("fail to find transport by via config")
+}
+
+func (p *Proxy) findTransportByBackendAddr(addr string, preferProtocol string) (ServerTransport, error) {
+	if backendsWithParent, ok := p.backends[addr]; ok {
+		transport, err := p.findTransportFromBackendsWithParent(backendsWithParent, func(transport ServerTransport) bool {
+			return transport.GetAddress() == addr
+		})
+		if err == nil {
+			return transport, err
+		}
+		transport, err = p.findTransportFromBackendsWithParent(backendsWithParent, func(transport ServerTransport) bool {
+			return transport.GetProtocol() == preferProtocol
+		})
+		if err == nil {
+			return transport, err
+		}
+		transport, err = p.findTransportFromBackendsWithParent(backendsWithParent, func(transport ServerTransport) bool {
+			return true
+		})
+		return transport, err
+
+	}
+	return nil, fmt.Errorf("fail to find backend by %s", addr)
+}
+
+func (p *Proxy) findTransportFromBackendsWithParent(backendsWithParent []*BackendWithParent, cond func(transport ServerTransport) bool) (ServerTransport, error) {
+	for _, backendWithParent := range backendsWithParent {
+		proxyItem := p.findProxyItemByRoundrobinBackend(backendWithParent.parent)
+		if proxyItem != nil {
+			// find the transport by preferProtocol
+			transport, err := proxyItem.FindTransport(cond)
+			if err == nil {
+				return transport, err
+			}
+		}
+	}
+	return nil, fmt.Errorf("fail to find backend")
+
+}
 func (p *Proxy) findProxyItemByRoundrobinBackend(rrBackend *RoundRobinBackend) *ProxyItem {
 	for _, item := range p.items {
-		if item.backend == rrBackend {
+		if item.backend == rrBackend && item.viaConfig == nil {
 			return item
 		}
 	}
 	return nil
 }
 
-func (p *Proxy) findBackendProxyItem() *ProxyItem {
+func (p *Proxy) findBackendProxyItem(protocol string) *ProxyItem {
 	for _, item := range p.items {
-		if item.backend != nil {
+		if item.backend != nil && strings.HasPrefix(item.backend.GetAddress(), protocol) {
 			return item
 		}
 	}
@@ -621,7 +728,7 @@ func (p *Proxy) getNextReponseHop(msg *Message) (host string, port int, transpor
 }
 
 func (p *Proxy) findClientTransport(host string, port int, transport string, transId string) (ClientTransport, error) {
-	trans, err := p.clientTransMgr.GetTransport(transport, host, port, p.localAddress, transId)
+	trans, err := p.clientTransMgr.GetTransport(transport, host, port, transId)
 	if err == nil && trans.primary == nil {
 		serverTrans, ok := p.selfLearnRoute.GetRoute(host)
 		if ok {
@@ -658,34 +765,16 @@ func (p *Proxy) sendMessage(host string, port int, transport string, msg *Messag
 }
 
 // NewProxyItem create a sip proxy
-func NewProxyItem(address string,
-	udpPort int,
-	tcpPort int,
-	backendLocalAddress string,
-	backendLocalPort int,
-	backends []string,
-	dests []string,
+func NewProxyItem(listenConfig ListenConfig,
 	receivedSupport bool,
-	defRoute bool,
 	connAcceptedListener ConnectionAcceptedListener,
 	selfLearnRoute *SelfLearnRoute,
 	msgHandler MessageHandler) (*ProxyItem, error) {
-	zap.L().Info("NewProxyItem", zap.Int("udpPort", udpPort), zap.Int("tcpPort", tcpPort), zap.String("backends", strings.Join(backends, ",")), zap.String("dests", strings.Join(dests, ",")), zap.Bool("receivedSupport", receivedSupport), zap.Bool("defRoute", defRoute))
-	transports := make([]ServerTransport, 0)
-	if udpPort > 0 {
-		udpServerTrans, err := NewUDPServerTransport(address, udpPort, receivedSupport, selfLearnRoute)
-		if err == nil {
-			transports = append(transports, udpServerTrans)
-		}
-	}
-	if tcpPort > 0 {
-		transports = append(transports, NewTCPServerTransport(address, tcpPort, receivedSupport, connAcceptedListener, selfLearnRoute))
-	}
+	zap.L().Info("NewProxyItem", zap.Any("listenConfig", listenConfig), zap.Bool("receivedSupport", receivedSupport))
 
-	proxyItem := &ProxyItem{transports: transports,
+	proxyItem := &ProxyItem{transports: make([]ServerTransport, 0),
+		viaConfig:  createViaConfig(listenConfig.Via),
 		backend:    nil,
-		dests:      dests,
-		defRoute:   defRoute,
 		msgHandler: msgHandler,
 	}
 
@@ -694,9 +783,30 @@ func NewProxyItem(address string,
 		proxyItem.connectionEstablished(conn, receivedSupport, selfLearnRoute)
 	}
 
-	proxyItem.backend, _ = CreateRoundRobinBackend(net.JoinHostPort(backendLocalAddress, strconv.Itoa(backendLocalPort)), backends, connectionEstablished)
+	proxyItem.backend, _ = CreateRoundRobinBackend(listenConfig.Backends, connectionEstablished)
+
+	if listenConfig.UdpPort > 0 {
+		udpServerTrans, err := NewUDPServerTransport(listenConfig.Address, listenConfig.UdpPort, receivedSupport, selfLearnRoute, proxyItem.viaConfig, proxyItem.backend)
+		if err == nil {
+			proxyItem.transports = append(proxyItem.transports, udpServerTrans)
+		}
+	}
+
+	if listenConfig.TcpPort > 0 {
+		proxyItem.transports = append(proxyItem.transports, NewTCPServerTransport(listenConfig.Address, listenConfig.TcpPort, receivedSupport, connAcceptedListener, selfLearnRoute, proxyItem.viaConfig, proxyItem.backend))
+	}
 
 	return proxyItem, nil
+}
+
+func (p *ProxyItem) FindTransport(cond func(serverTransport ServerTransport) bool) (ServerTransport, error) {
+	for _, transport := range p.transports {
+		if cond(transport) {
+			return transport, nil
+		}
+	}
+	return nil, fmt.Errorf("fail to find transport")
+
 }
 
 func (p *ProxyItem) connectionEstablished(conn net.Conn, receivedSupport bool, selfLearnRoute *SelfLearnRoute) {
@@ -704,7 +814,7 @@ func (p *ProxyItem) connectionEstablished(conn net.Conn, receivedSupport bool, s
 	defer p.Unlock()
 
 	p.removeExitServerTransports()
-	trans := NewTCPServerTransportWithConn(conn, receivedSupport, selfLearnRoute)
+	trans := NewTCPServerTransportWithConn(conn, receivedSupport, selfLearnRoute, p.backend)
 	p.transports = append(p.transports, trans)
 	trans.Start(p.msgHandler)
 
@@ -725,7 +835,7 @@ func (p *ProxyItem) removeExitServerTransports() {
 
 }
 
-func (p *ProxyItem) start() error {
+func (p *ProxyItem) Start() error {
 	for _, trans := range p.transports {
 		err := trans.Start(p.msgHandler)
 		if err != nil {

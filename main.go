@@ -23,27 +23,43 @@ type HostIp struct {
 	Ip   string
 }
 
+type ViaConfig struct {
+	Address string
+	// must be tcp or udp
+	Protocol string
+	Port     int
+}
+type BackendConfig struct {
+	// backend address
+	Address string `yaml:"address,omitempty"`
+	// local bind address to sending sip message to backend
+	LocalAddress string `yaml:"localAddress,omitempty"`
+}
+type ListenConfig struct {
+	Address  string
+	Via      string `yaml:"via,omitempty"`
+	TcpPort  int    `yaml:"tcp-port,omitempty"`
+	UdpPort  int    `yaml:"udp-port,omitempty"`
+	Backends []BackendConfig
+}
+
+// ProxyConfig is the configuration for a SIP proxy
+
 type ProxyConfig struct {
-	Name             string
-	DialogTimeout    int    `yaml:"dialogTimeout,omitempty"`
+	Name          string
+	DialogTimeout int `yaml:"dialogTimeout,omitempty"`
+	// Yes or True: keep the next hop route in the route header
+	// No or False: remove the next hop route in the route header
+	// If not specified, the default value is "yes"
 	KeepNextHopRoute string `yaml:"keepNextHopRoute,omitempty"`
-	Listens          []struct {
-		Address string
-		UDPPort int `yaml:"udp-port,omitempty"`
-		TCPPort int `yaml:"tcp-port,omitempty"`
-		// LocalAddress for sending message to backend
-		BackendLocalAdress string `yaml:"backend-local-address,omitempty"`
-		// Local port for sending message to backend
-		BackendLocalPort int      `yaml:"backend-local-port,omitempty"`
-		Backends         []string `yaml:",omitempty"`
-		Dests            []string `yaml:",omitempty"`
-		NoReceived       bool     `yaml:"no-received,omitempty"`
-		defRoute         bool     `yaml:"def-route,omitempty"`
-		// True if the route must be recorded in the route header
-		// False: no record-route will be added to the header if there is any record-route in the header
-		// If not specified, the route must be recorded in the route header
-		MustRecordRoute bool `yaml:"must-record-route,omitempty"`
-	}
+	NoReceived       bool   `yaml:"no-received,omitempty"`
+	// True if the route must be recorded in the route header
+	// False: no record-route will be added to the header if there is any record-route in the header
+	// If not specified, the route must be recorded in the route header
+	MustRecordRoute bool `yaml:"must-record-route,omitempty"`
+	Listens         []ListenConfig
+	// The route is a list of destination and next hop
+	// The destination is a regular expression
 	Route []struct {
 		Dests    []string
 		Protocol string
@@ -61,6 +77,10 @@ type ProxiesConfigure struct {
 }
 
 func init() {
+}
+
+func (vc *ViaConfig) String() string {
+	return fmt.Sprintf("%s://%s:%d", vc.Protocol, vc.Address, vc.Port)
 }
 
 func initLog(logFile string, logLevel string, logFormat string, logSize int, backups int) {
@@ -179,54 +199,23 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 	if dialogTimeout <= 0 {
 		dialogTimeout = getDefaultDialogTimeout()
 	}
-	proxies := make([]*Proxy, 0)
-	//proxy := NewProxy(config.Name, int64(dialogTimeout), toKeepNextHopRoute(config.KeepNextHopRoute), preConfigRoute, resolver, selfLearnRoute)
-	for _, listen := range config.Listens {
-		proxy := NewProxy(config.Name,
-			int64(dialogTimeout),
-			listen.Address,
-			toKeepNextHopRoute(config.KeepNextHopRoute),
-			preConfigRoute,
-			resolver,
-			selfLearnRoute,
-			!listen.NoReceived,
-			listen.MustRecordRoute)
-		item, err := NewProxyItem(listen.Address,
-			listen.UDPPort,
-			listen.TCPPort,
-			listen.BackendLocalAdress,
-			listen.BackendLocalPort,
-			listen.Backends,
-			listen.Dests,
-			listen.defRoute,
-			!listen.NoReceived,
-			proxy,
-			selfLearnRoute,
-			proxy)
+	proxy := NewProxy(config.Name,
+		int64(dialogTimeout),
+		config.Listens,
+		toKeepNextHopRoute(config.KeepNextHopRoute),
+		preConfigRoute,
+		resolver,
+		selfLearnRoute,
+		!config.NoReceived,
+		config.MustRecordRoute)
 
-		if err != nil {
-			zap.L().Error("Fail to start proxy with error", zap.String("error", err.Error()))
-			return err
-		}
-
-		proxy.AddItem(item)
-		proxies = append(proxies, proxy)
-	}
-	failed_proxies := 0
-	for _, proxy := range proxies {
-		err := proxy.Start()
-		if err == nil {
-			zap.L().Info("Succeed to start proxy", zap.String("name", config.Name))
-		} else {
-			failed_proxies += 1
-			zap.L().Error("Fail to start proxy", zap.String("name", config.Name))
-		}
-	}
-	if failed_proxies > 0 {
-		return fmt.Errorf("failed to start %d proxies", failed_proxies)
+	err := proxy.Start()
+	if err == nil {
+		zap.L().Info("Succeed to start proxy", zap.String("name", config.Name))
 	} else {
-		return nil
+		zap.L().Error("Fail to start proxy", zap.String("name", config.Name))
 	}
+	return err
 }
 
 func createPreConfigRoute(config ProxyConfig) *PreConfigRoute {

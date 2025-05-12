@@ -20,29 +20,37 @@ type RawMessage struct {
 	Message         *Message
 	From            ServerTransport
 	ReceivedSupport bool
-	TcpConn         net.Conn
+	// TCPConn is used to send message back to the peer
+	// when the message is received from TCP connection
+	TcpConn net.Conn
+	// the prefered backend
+	Backend Backend
+	Via     *ViaConfig
 }
 
-func NewRawMessage(peerAddr string, peerPort int, from ServerTransport, receivedSupport bool, msg *Message) *RawMessage {
+func NewRawMessage(peerAddr string, peerPort int, from ServerTransport, receivedSupport bool, msg *Message, backend Backend, via *ViaConfig) *RawMessage {
 	return &RawMessage{
 		PeerAddr:        peerAddr,
 		PeerPort:        peerPort,
 		From:            from,
 		ReceivedSupport: receivedSupport,
 		Message:         msg,
-		TcpConn:         nil}
+		TcpConn:         nil,
+		Backend:         backend,
+		Via:             via,
+	}
 }
 
 type MessageHandler interface {
 	HandleRawMessage(msg *RawMessage)
-	HandleMessage(msg *Message)
+	//HandleMessage(msg *Message, backend Backend)
 }
 
 type ServerTransport interface {
 	Start(msgHandler MessageHandler) error
 	// send message to remote host with port
 	Send(host string, port int, message *Message) error
-	// TCP, UDP or TLS
+	// tcp, udp or tls
 	GetProtocol() string
 
 	// Get Address
@@ -64,6 +72,8 @@ type UDPServerTransport struct {
 	conn            *net.UDPConn
 	receivedSupport bool
 	selfLearnRoute  *SelfLearnRoute
+	via             *ViaConfig
+	backend         Backend
 	msgHandler      MessageHandler
 	msgBufPool      *ByteArrayPool
 	msgParseChannel chan SizedByteArray
@@ -73,11 +83,14 @@ type ConnectionAcceptedListener interface {
 	ConnectionAccepted(conn net.Conn)
 }
 type TCPServerTransport struct {
-	addr                 string
-	port                 int
-	conn                 net.Conn
-	receivedSupport      bool
-	selfLearnRoute       *SelfLearnRoute
+	addr            string
+	port            int
+	conn            net.Conn
+	receivedSupport bool
+	selfLearnRoute  *SelfLearnRoute
+	via             *ViaConfig
+	// Optional backend for the transport
+	backend              Backend
 	msgHandler           MessageHandler
 	connAcceptedListener ConnectionAcceptedListener
 	exit                 bool
@@ -139,7 +152,7 @@ type TCPClientTransport struct {
 	reconnectable         bool
 	conn                  net.Conn
 	expire                int64
-	connectionEstablished ConnectionEstablished
+	connectionEstablished ConnectionEstablishedFunc
 }
 
 var SupportedProtocol = map[string]string{"udp": "udp", "tcp": "tcp"}
@@ -151,7 +164,10 @@ func NewUDPClientTransport(host string, port int, localAddress string) (*UDPClie
 		zap.L().Error("Fail to resolve udp host address", zap.String("host", host), zap.Int("port", port), zap.String("error", err.Error()))
 		return nil, err
 	}
-	laddr, _ := net.ResolveUDPAddr("udp", net.JoinHostPort(localAddress, "0"))
+	var laddr *net.UDPAddr = nil
+	if len(localAddress) > 0 {
+		laddr, _ = net.ResolveUDPAddr("udp", net.JoinHostPort(localAddress, "0"))
+	}
 	return &UDPClientTransport{conn: nil, localAddr: laddr, remoteAddr: raddr}, nil
 }
 
@@ -202,19 +218,21 @@ type ClientTransportMgr struct {
 	sync.Mutex
 	transports            map[string]*FailOverClientTransport
 	lastCleanTime         int64
-	connectionEstablished ConnectionEstablished
+	selfLearnRoute        *SelfLearnRoute
+	connectionEstablished ConnectionEstablishedFunc
 }
 
 // NewClientTransportMgr create a client transport manager object
-func NewClientTransportMgr(connectionEstablished ConnectionEstablished) *ClientTransportMgr {
+func NewClientTransportMgr(selfLearnRoute *SelfLearnRoute, connectionEstablished ConnectionEstablishedFunc) *ClientTransportMgr {
 	return &ClientTransportMgr{transports: make(map[string]*FailOverClientTransport),
 		lastCleanTime:         time.Now().Unix(),
+		selfLearnRoute:        selfLearnRoute,
 		connectionEstablished: connectionEstablished}
 
 }
 
 // GetTransport Get the client ransport by the protocol, host and port
-func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int, localAddress string, transId string) (*FailOverClientTransport, error) {
+func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int, transId string) (*FailOverClientTransport, error) {
 	c.Lock()
 	defer c.Unlock()
 
@@ -232,7 +250,7 @@ func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int
 		zap.L().Info("get client by full address", zap.String("fullAddr", fullAddr))
 		return trans, nil
 	}
-	trans, err := c.createClientTransport(protocol, host, port, localAddress)
+	trans, err := c.createClientTransport(protocol, host, port)
 	if err != nil {
 		zap.L().Info("fail to client by full address", zap.String("fullAddr", fullAddr))
 		return nil, err
@@ -263,9 +281,11 @@ func (c *ClientTransportMgr) getFullAddr(protocol string, host string, port int,
 	return fullAddr
 }
 
-func (c *ClientTransportMgr) createClientTransport(protocol string, host string, port int, localAddress string) (*FailOverClientTransport, error) {
+func (c *ClientTransportMgr) createClientTransport(protocol string, host string, port int) (*FailOverClientTransport, error) {
 	var client ClientTransport = nil
 	var err error = nil
+	var localAddress string = c.getLocalAddress(host)
+
 	if protocol == "udp" {
 		client, err = NewUDPClientTransport(host, port, localAddress)
 		if err == nil {
@@ -293,6 +313,13 @@ func (c *ClientTransportMgr) createClientTransport(protocol string, host string,
 
 }
 
+func (c *ClientTransportMgr) getLocalAddress(host string) string {
+	if c.selfLearnRoute != nil {
+		return c.selfLearnRoute.GetRouteAddress(host)
+	}
+	return ""
+}
+
 func (c *ClientTransportMgr) cleanExpiredTransport() {
 	var now int64 = time.Now().Unix()
 	if now-c.lastCleanTime < 60 {
@@ -313,7 +340,7 @@ func (c *ClientTransportMgr) cleanExpiredTransport() {
 }
 
 // NewTCPClientTransport create a TCP client transport with the specified host and port
-func NewTCPClientTransport(host string, port int, localAddress string, connectionEstablished ConnectionEstablished) (*TCPClientTransport, error) {
+func NewTCPClientTransport(host string, port int, localAddress string, connectionEstablished ConnectionEstablishedFunc) (*TCPClientTransport, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	return &TCPClientTransport{addr: addr,
 		localAddress:          localAddress,
@@ -377,7 +404,7 @@ func (t *TCPClientTransport) IsExpired() bool {
 	return t.expire > 0 && time.Now().Unix() > t.expire
 }
 
-func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute) (*UDPServerTransport, error) {
+func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLearnRoute *SelfLearnRoute, via *ViaConfig, backend Backend) (*UDPServerTransport, error) {
 
 	zap.L().Info("Create new UDP server transport", zap.String("addr", addr), zap.Int("port", port))
 	localAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(addr, strconv.Itoa(port)))
@@ -385,12 +412,16 @@ func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLear
 		zap.L().Error("Not a valid ip address", zap.String("addr", addr), zap.Int("port", port))
 		return nil, err
 	}
-	return &UDPServerTransport{localAddr: localAddr,
+	return &UDPServerTransport{
+		localAddr:       localAddr,
 		receivedSupport: receivedSupport,
 		msgHandler:      nil,
 		msgParseChannel: make(chan SizedByteArray, 40960),
 		msgBufPool:      NewByteArrayPool(40960, 64*1024),
-		selfLearnRoute:  selfLearnRoute}, nil
+		via:             via,
+		selfLearnRoute:  selfLearnRoute,
+		backend:         backend,
+	}, nil
 }
 
 func (u *UDPServerTransport) Send(host string, port int, msg *Message) error {
@@ -437,7 +468,7 @@ func (u *UDPServerTransport) receiveMessage() {
 		port := peerAddr.Port
 		zap.L().Info("a UDP packet is received", zap.Int("length", n), zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", peerAddr.String()))
 		u.msgParseChannel <- SizedByteArray{b: buf, n: n, msgHandler: func(msg *Message) {
-			u.msgHandler.HandleRawMessage(NewRawMessage(address, port, u, u.receivedSupport, msg))
+			u.msgHandler.HandleRawMessage(NewRawMessage(address, port, u, u.receivedSupport, msg, u.backend, u.via))
 		}}
 
 	}
@@ -456,7 +487,7 @@ func (u *UDPServerTransport) startParseMessage() {
 }
 
 func (u *UDPServerTransport) GetProtocol() string {
-	return "UDP"
+	return "udp"
 }
 
 func (u *UDPServerTransport) GetAddress() string {
@@ -478,20 +509,26 @@ func NewTCPServerTransport(addr string,
 	port int,
 	receivedSupport bool,
 	connAcceptedListener ConnectionAcceptedListener,
-	selfLearnRoute *SelfLearnRoute) *TCPServerTransport {
+	selfLearnRoute *SelfLearnRoute,
+	via *ViaConfig,
+	backend Backend) *TCPServerTransport {
 	return &TCPServerTransport{addr: addr,
 		port:                 port,
 		conn:                 nil,
 		receivedSupport:      receivedSupport,
 		connAcceptedListener: connAcceptedListener,
 		selfLearnRoute:       selfLearnRoute,
+		via:                  via,
+		backend:              backend,
+		msgHandler:           nil,
 		exit:                 false,
 	}
 }
 
 func NewTCPServerTransportWithConn(conn net.Conn,
 	receivedSupport bool,
-	selfLearnRoute *SelfLearnRoute) *TCPServerTransport {
+	selfLearnRoute *SelfLearnRoute,
+	backend Backend) *TCPServerTransport {
 	addr, port, err := net.SplitHostPort(conn.LocalAddr().String())
 
 	if err == nil {
@@ -503,6 +540,8 @@ func NewTCPServerTransportWithConn(conn net.Conn,
 			receivedSupport:      receivedSupport,
 			connAcceptedListener: nil,
 			selfLearnRoute:       selfLearnRoute,
+			backend:              backend,
+			msgHandler:           nil,
 			exit:                 false,
 		}
 	}
@@ -556,7 +595,7 @@ func (t *TCPServerTransport) receiveMessage(conn net.Conn) {
 			break
 		}
 		msg.ReceivedFrom = t
-		rawMsg := NewRawMessage(peerAddr, peerPort, t, t.receivedSupport, msg)
+		rawMsg := NewRawMessage(peerAddr, peerPort, t, t.receivedSupport, msg, t.backend, t.via)
 		rawMsg.TcpConn = conn
 		t.msgHandler.HandleRawMessage(rawMsg)
 	}
@@ -570,7 +609,7 @@ func (t *TCPServerTransport) Send(host string, port int, message *Message) error
 }
 
 func (t *TCPServerTransport) GetProtocol() string {
-	return "TCP"
+	return "tcp"
 }
 
 func (t *TCPServerTransport) GetAddress() string {

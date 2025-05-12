@@ -110,23 +110,20 @@ func NewResponseOf(request *Message, statusCode int, reason string) *Message {
 }
 
 func readLine(reader *bufio.Reader) ([]byte, error) {
-	line, isPrefix, err := reader.ReadLine()
+	line, err := reader.ReadBytes('\n')
+
 	if err != nil {
 		return nil, err
 	}
-	if !isPrefix {
-		return line, err
-	}
-	for {
-		b, isPrefix, err := reader.ReadLine()
-		if err != nil {
-			return nil, err
-		}
-		line = append(line, b...)
-		if !isPrefix {
-			return line, nil
+	n := len(line)
+	if n > 0 && line[n-1] == '\n' {
+		if n > 1 && line[n-2] == '\r' {
+			line = line[0 : n-2]
+		} else {
+			line = line[0 : n-1]
 		}
 	}
+	return line, nil
 }
 
 func isWhiteSpace(b byte) bool {
@@ -298,6 +295,8 @@ func (m *Message) RemoveHeader(name string) (interface{}, error) {
 	return "", fmt.Errorf("no such header %s", name)
 }
 
+// Get the first From header
+// If the header is not a FromSpec, parse it and set the value to FromSpec
 func (m *Message) GetFrom() (*FromSpec, error) {
 	header, err := m.GetHeader("From")
 	if err != nil {
@@ -317,6 +316,8 @@ func (m *Message) GetFrom() (*FromSpec, error) {
 	return nil, errors.New("type of the From header is not string or From")
 }
 
+// Get the To header
+// If the header is not a To, parse it and set the value to To
 func (m *Message) GetTo() (*To, error) {
 	header, err := m.GetHeader("To")
 	if err != nil {
@@ -434,17 +435,19 @@ func (m *Message) GetCSeq() (*CSeq, error) {
 }
 
 // PopVia remove first via
-func (m *Message) PopVia() error {
+func (m *Message) PopVia() (*Via, error) {
 	via, err := m.GetVia()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if via.Size() > 1 {
-		_, err := via.PopViaParam()
-		return err
+		viaParam, err := via.PopViaParam()
+		via = NewVia()
+		via.AddViaParam(viaParam)
+		return via, err
 	} else {
 		_, err := m.RemoveHeader("Via")
-		return err
+		return via, err
 	}
 }
 
@@ -508,6 +511,44 @@ func (m *Message) AddRecordRoute(recordRoute *RecordRoute) {
 	headers = append(headers, &Header{name: "Record-Route", value: recordRoute})
 	headers = append(headers, m.headers[pos:]...)
 	m.headers = headers
+}
+
+func (m *Message) GetRecordRoute() (*RecordRoute, error) {
+	header, err := m.GetHeader("Record-Route")
+	if err != nil {
+		return nil, err
+	}
+	if rr, ok := header.value.(*RecordRoute); ok {
+		return rr, nil
+	}
+	if s, ok := header.value.(string); ok {
+		rr, err := ParseRecordRoute(s)
+		if err != nil {
+			return nil, err
+		}
+		header.value = rr
+		return rr, nil
+	}
+	return nil, errors.New("the header value type is not string or Record-Route")
+}
+
+func (m *Message) PopRecordRoute() (*RecordRoute, error) {
+	header, err := m.RemoveHeader("Record-Route")
+	if err != nil {
+		return nil, err
+	}
+	if rr, ok := header.(*RecordRoute); ok {
+		return rr, nil
+	}
+	if s, ok := header.(string); ok {
+		rr, err := ParseRecordRoute(s)
+		if err == nil {
+			return rr, nil
+		} else {
+			return nil, err
+		}
+	}
+	return nil, errors.New("the header value type is not string or Record-Route")
 }
 
 func (m *Message) Write(writer io.Writer) (int, error) {
@@ -647,7 +688,10 @@ func (m *Message) GetCallID() (string, error) {
 	return "", errors.New("Call-ID is not a string")
 }
 
-// Get the Dialog
+// Get the Dialog:
+// The combination of the To tag, From tag,
+// and Call-ID completely defines a peer-to-peer SIP relationship
+// between Alice and Bob and is referred to as a dialog.
 func (m *Message) GetDialog() (string, error) {
 	callId, err := m.GetCallID()
 	if err != nil {
@@ -699,7 +743,6 @@ func (m *Message) GetDialog() (string, error) {
 		return NewDialog(callId,
 			fmt.Sprintf("%s-%s", to_tag, to_addr_s),
 			fmt.Sprintf("%s-%s", from_tag, from_addr_s)).String(), nil
-
 	}
 }
 
@@ -752,6 +795,23 @@ func (m *Message) GetTopViaSentBy() (string, error) {
 }
 
 // GetClientTransaction get the client transaction from message
+// When the transport layer in the client receives a response, it has to
+// determine which client transaction will handle the response, so that
+// the processing of Sections 17.1.1 and 17.1.2 can take place.  The
+// branch parameter in the top Via header field is used for this
+// purpose.  A response matches a client transaction under two
+// conditions:
+//
+//    1.  If the response has the same value of the branch parameter in
+// 	   the top Via header field as the branch parameter in the top
+// 	   Via header field of the request that created the transaction.
+//
+//    2.  If the method parameter in the CSeq header field matches the
+// 	   method of the request that created the transaction.  The
+// 	   method is needed since a CANCEL request constitutes a
+// 	   different transaction, but shares the same value of the branch
+// 	   parameter.
+
 func (m *Message) GetClientTransaction() (string, error) {
 	cseq, err := m.GetCSeq()
 	if err != nil {
@@ -769,17 +829,38 @@ func (m *Message) GetClientTransaction() (string, error) {
 
 }
 
+// When a request is received from the network by the server, it has to
+// be matched to an existing transaction.  This is accomplished in the
+// following manner.
+//
+// The branch parameter in the topmost Via header field of the request
+// is examined.  If it is present and begins with the magic cookie
+// "z9hG4bK", the request was generated by a client transaction
+// compliant to this specification.  Therefore, the branch parameter
+// will be unique across all transactions sent by that client.  The
+// request matches a transaction if:
+//
+//  1. the branch parameter in the request is equal to the one in the
+//     top Via header field of the request that created the
+//     transaction, and
+//
+//  2. the sent-by value in the top Via of the request is equal to the
+//     one in the request that created the transaction, and
+//
+//  3. the method of the request matches the one that created the
+//     transaction, except for ACK, where the method of the request
+//     that created the transaction is INVITE.
 func (m *Message) GetServerTransaction() (string, error) {
 	if m.IsResponse() {
 		return "", fmt.Errorf("no server transaction for response")
 	}
+
 	// the method of the request matches the one that created the
 	// transaction, except for ACK, where the method of the request
 	// that created the transaction is INVITE.
 	if m.request.method == "ACK" {
-		return "", errors.New("no server transaction for ACK")
+		return "", fmt.Errorf("no server transaction for ACK")
 	}
-
 	// Get the top Via Branch
 	branch, err := m.GetTopViaBranch()
 
@@ -793,7 +874,15 @@ func (m *Message) GetServerTransaction() (string, error) {
 		return "", err
 	}
 
-	return fmt.Sprintf("%s-%s-%s", m.request.method, sentBy, branch), nil
+	method := m.request.method
+
+	// If the method is CANCEL, the method of the request that created the transaction is INVITE.
+	// The method of the request that created the transaction is INVITE.
+	if m.request.method == "CANCEL" || m.request.method == "ACK" {
+		method = "INVITE"
+	}
+
+	return fmt.Sprintf("%s-%s-%s", method, sentBy, branch), nil
 }
 
 // Get the value of Expires
@@ -804,3 +893,15 @@ func (m *Message) GetExpires(defValue int) int {
 	}
 	return defValue
 }
+
+func (m *Message) Clone() *Message {
+	headers := make([]*Header, len(m.headers))
+	copy(headers, m.headers)
+
+	return &Message{request: m.request,
+		response:     m.response,
+		headers:      headers,
+		body:         m.body,
+		ReceivedFrom: m.ReceivedFrom}
+}
+
