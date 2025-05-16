@@ -229,3 +229,4 @@ func (s *SIPURI) ToString(withParams bool, withHeaders bool) string {
 	s._Write(writer, withParams, withHeaders)
 	return writer.String()
 }
+

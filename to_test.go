@@ -40,3 +40,16 @@ func TestParseToHeaderWithTel(t *testing.T) {
 	}
 	fmt.Println(to)
 }
+
+func TestParseToHeaderWithoutParams(t *testing.T) {
+	to, err := ParseTo("<urn:service:sos>")
+	if err != nil {
+		t.Fail()
+	}
+	fmt.Println(to)
+	s, err := to.GetAbsoluteURI()
+	if err != nil || s != "urn:service:sos" {
+		t.Fail()
+	}
+}
+

@@ -13,45 +13,6 @@ import (
 	"go.uber.org/zap"
 )
 
-type BackendChangeListener interface {
-	HandleBackendAdded(backend Backend, parent *RoundRobinBackend)
-	HandleBackendRemoved(backend Backend, parent *RoundRobinBackend)
-}
-
-type BackendChangeListenerMgr struct {
-	sync.Mutex
-	listeners []BackendChangeListener
-}
-
-func NewBackendChangeListenerMgr() *BackendChangeListenerMgr {
-	return &BackendChangeListenerMgr{listeners: make([]BackendChangeListener, 0)}
-}
-
-func (bm *BackendChangeListenerMgr) AddChangeListener(listener BackendChangeListener) {
-	bm.Lock()
-	defer bm.Unlock()
-
-	bm.listeners = append(bm.listeners, listener)
-}
-
-func (bm *BackendChangeListenerMgr) HandleBackendAdded(backend Backend, parent *RoundRobinBackend) {
-	bm.Lock()
-	defer bm.Unlock()
-
-	for _, listener := range bm.listeners {
-		listener.HandleBackendAdded(backend, parent)
-	}
-}
-
-func (bm *BackendChangeListenerMgr) HandleBackendRemoved(backend Backend, parent *RoundRobinBackend) {
-	bm.Lock()
-	defer bm.Unlock()
-
-	for _, listener := range bm.listeners {
-		listener.HandleBackendRemoved(backend, parent)
-	}
-}
-
 type Backend interface {
 	// Send message to backend
 	Send(msg *Message) (Backend, error)
@@ -60,10 +21,10 @@ type Backend interface {
 }
 type RoundRobinBackend struct {
 	sync.Mutex
-	index                    int
-	backends                 []Backend
-	backendMap               map[string]Backend
-	backendChangeListenerMgr *BackendChangeListenerMgr
+	index      int
+	backends   []Backend
+	backendMap map[string]Backend
+	//backendChangeListenerMgr *BackendChangeListenerMgr
 	//dialogBasedBackend       *DialogBasedBackend
 }
 
@@ -118,12 +79,15 @@ func CreateRoundRobinBackend(backends []BackendConfig, connectionEstablished Con
 		localBindAddress := net.JoinHostPort(backendConf.LocalAddress, "0")
 		u, err := url.Parse(backendConf.Address)
 		if err != nil {
+			zap.L().Error("Fail to parse url address", zap.String("address", backendConf.Address))
 			return nil, err
 		}
 
 		if u.Scheme == "udp" || u.Scheme == "tcp" {
 			pos := strings.LastIndex(u.Host, ":")
-			if pos != -1 {
+			if pos == -1 {
+				zap.L().Error("Fail to find port number", zap.String("address", u.Host))
+			} else {
 				host := u.Host[0:pos]
 				port := u.Host[pos+1:]
 				zap.L().Info("add backend", zap.String("host", host), zap.String("port", port), zap.String("protocol", u.Scheme))
@@ -230,13 +194,12 @@ func (t *TCPBackend) Send(msg *Message) (Backend, error) {
 			continue
 		}
 
-		n, err := t.conn.Write(b)
-		zap.L().Info("try to write message to TCP backend", zap.String("backendAddr", t.conn.RemoteAddr().String()), zap.String("localAddr", t.conn.LocalAddr().String()), zap.Int("bytesWritten", n))
+		_, err := t.conn.Write(b)
 		if err == nil {
-			zap.L().Debug("Succeed to send message to backend", zap.String("backendAddr", t.backendAddr))
+			zap.L().Debug("Succeed to send message to backend", zap.String("backendAddr", t.backendAddr), zap.String("message", string(b)))
 			return t, nil
 		}
-		zap.L().Info("Fail to send message to backend", zap.String("backendAddr", t.backendAddr))
+		zap.L().Error("Fail to send message to backend", zap.String("backendAddr", t.backendAddr), zap.String("error", err.Error()), zap.String("message", string(b)))
 		t.conn.Close()
 		t.conn = nil
 	}
@@ -268,18 +231,26 @@ func (t *TCPBackend) Close() {
 
 func NewRoundRobinBackend() *RoundRobinBackend {
 	rb := &RoundRobinBackend{index: 0,
-		backends:                 make([]Backend, 0),
-		backendMap:               make(map[string]Backend),
-		backendChangeListenerMgr: NewBackendChangeListenerMgr()}
+		backends:   make([]Backend, 0),
+		backendMap: make(map[string]Backend)}
 	return rb
 }
 
 func (rb *RoundRobinBackend) AddBackend(backend Backend) {
 	rb.Lock()
 	defer rb.Unlock()
+	if _, ok := rb.backendMap[backend.GetAddress()]; ok {
+		for index, p := range rb.backends {
+			if backend.GetAddress() == p.GetAddress() {
+				rb.backends = append(rb.backends[0:index], rb.backends[index+1:]...)
+				break
+			}
+		}
+		delete(rb.backendMap, backend.GetAddress())
+		backend.Close()
+	}
 	rb.backends = append(rb.backends, backend)
 	rb.backendMap[backend.GetAddress()] = backend
-	rb.backendChangeListenerMgr.HandleBackendAdded(backend, rb)
 }
 
 func (rb *RoundRobinBackend) GetBackend(address string) (Backend, error) {
@@ -295,7 +266,7 @@ func (rb *RoundRobinBackend) GetBackend(address string) (Backend, error) {
 func (rb *RoundRobinBackend) RemoveBackend(address string) {
 	rb.Lock()
 	defer rb.Unlock()
-	if backend, ok := rb.backendMap[address]; ok {
+	if _, ok := rb.backendMap[address]; ok {
 		for index, p := range rb.backends {
 			if address == p.GetAddress() {
 				p.Close()
@@ -306,7 +277,6 @@ func (rb *RoundRobinBackend) RemoveBackend(address string) {
 			}
 		}
 		delete(rb.backendMap, address)
-		rb.backendChangeListenerMgr.HandleBackendRemoved(backend, rb)
 	}
 }
 
@@ -384,15 +354,6 @@ func (rb *RoundRobinBackend) getBackendCount() int {
 	defer rb.Unlock()
 	return len(rb.backends)
 
-}
-
-func (rb *RoundRobinBackend) AddBackendChangeListener(listener BackendChangeListener) {
-	rb.backendChangeListenerMgr.AddChangeListener(listener)
-	rb.Lock()
-	defer rb.Unlock()
-	for _, backend := range rb.backendMap {
-		listener.HandleBackendAdded(backend, rb)
-	}
 }
 
 func (rb *RoundRobinBackend) hostIPChanged(protocol string,
@@ -475,12 +436,14 @@ func (dbb *SessionBasedBackend) GetBackend(sessionId string) (Backend, error) {
 // for the backend. The expire time is set to the timeout value if it is greater than the timeout value.
 func (dbb *SessionBasedBackend) AddBackend(sessionId string, backend Backend, expireSeconds int) {
 	timeout := dbb.timeout
-	if float64(expireSeconds) > timeout.Seconds() || expireSeconds <= 0 {
+	// check if the expireSeconds is greater than the timeout value
+	// if it is, set the timeout value to the expireSeconds
+	if float64(expireSeconds) > timeout.Seconds() {
 		timeout = time.Duration(expireSeconds) * time.Second
 	}
 	expire := time.Now().Add(timeout)
 	dbb.backends[sessionId] = &ExpireBackend{backend: backend, expire: expire}
-	zap.L().Info("add backend for session", zap.String("sessionId", sessionId), zap.String("expire", expire.String()))
+	zap.L().Info("add backend for session", zap.String("sessionId", sessionId), zap.String("expire", expire.String()), zap.String("backend", backend.GetAddress()))
 	dbb.cleanExpiredSession()
 }
 

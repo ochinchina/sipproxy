@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -43,8 +44,15 @@ func (sl *SelfLearnRoute) AddRoute(ip string, transport ServerTransport) {
 
 	sl.cleanExpires()
 
+	key := fmt.Sprintf("%s:%s", ip, transport.GetProtocol())
+	if item, ok := sl.route[key]; ok {
+		// Check if the transport is the same as the one in the map
+		if sl.isSameTransport(item.serverTransport, transport) {
+			return
+		}
+	}
 	zap.L().Info("Add route for ip", zap.String("ip", ip), zap.String("protocol", transport.GetProtocol()), zap.String("addr", transport.GetAddress()), zap.Int("port", transport.GetPort()))
-	sl.route[ip] = SelfLearnItem{serverTransport: transport, expire: time.Now().Unix() + sl.expire}
+	sl.route[key] = SelfLearnItem{serverTransport: transport, expire: time.Now().Unix() + sl.expire}
 }
 
 func (sl *SelfLearnRoute) isSameTransport(transport1 ServerTransport, transport2 ServerTransport) bool {
@@ -53,23 +61,24 @@ func (sl *SelfLearnRoute) isSameTransport(transport1 ServerTransport, transport2
 		transport1.GetPort() == transport2.GetPort()
 }
 
-func (sl *SelfLearnRoute) GetRoute(ip string) (ServerTransport, bool) {
+func (sl *SelfLearnRoute) GetRoute(ip string, protocol string) (ServerTransport, bool) {
 	sl.Lock()
 	defer sl.Unlock()
 
-	item, ok := sl.route[ip]
-	if ok {
+	key := fmt.Sprintf("%s:%s", ip, protocol)
+	// Check if the route exists in the map
+	if item, ok := sl.route[key]; ok {
 		transport := item.serverTransport
 		zap.L().Info("Succeed to get route for ip", zap.String("ip", ip), zap.String("protocol", transport.GetProtocol()), zap.String("addr", transport.GetAddress()), zap.Int("port", transport.GetPort()))
+		return transport, true
 	}
-	return item.serverTransport, ok
+	return nil, false
 }
 
 // GetRouteAddress returns the address of the route for the given ip
 // It returns the address of the route for the given ip, empty string if not found
-func (sl *SelfLearnRoute) GetRouteAddress(ip string) string {
-	transport, ok := sl.GetRoute(ip)
-	if ok {
+func (sl *SelfLearnRoute) GetRouteAddress(ip string, protocol string) string {
+	if transport, ok := sl.GetRoute(ip, protocol); ok {
 		return transport.GetAddress()
 	} else {
 		return ""

@@ -200,9 +200,9 @@ func (u *UDPClientTransport) Send(msg *Message) error {
 	if err != nil {
 		return err
 	}
-	n, err := u.conn.WriteToUDP(b, u.remoteAddr)
+	_, err = u.conn.WriteToUDP(b, u.remoteAddr)
 	if err == nil {
-		zap.L().Info("Succeed to send message", zap.Int("length", n), zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", u.remoteAddr.String()))
+		zap.L().Debug("Succeed to send message", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()))
 	} else {
 		zap.L().Error("Fail to send message", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()), zap.String("error", err.Error()))
 	}
@@ -268,6 +268,7 @@ func (c *ClientTransportMgr) RemoveTransport(protocol string, host string, port 
 		return
 	}
 	fullAddr := c.getFullAddr(protocol, host, port, transId)
+
 	delete(c.transports, fullAddr)
 }
 
@@ -284,7 +285,7 @@ func (c *ClientTransportMgr) getFullAddr(protocol string, host string, port int,
 func (c *ClientTransportMgr) createClientTransport(protocol string, host string, port int) (*FailOverClientTransport, error) {
 	var client ClientTransport = nil
 	var err error = nil
-	var localAddress string = c.getLocalAddress(host)
+	var localAddress string = c.getLocalAddress(host, protocol)
 
 	if protocol == "udp" {
 		client, err = NewUDPClientTransport(host, port, localAddress)
@@ -313,9 +314,9 @@ func (c *ClientTransportMgr) createClientTransport(protocol string, host string,
 
 }
 
-func (c *ClientTransportMgr) getLocalAddress(host string) string {
+func (c *ClientTransportMgr) getLocalAddress(host string, protocol string) string {
 	if c.selfLearnRoute != nil {
-		return c.selfLearnRoute.GetRouteAddress(host)
+		return c.selfLearnRoute.GetRouteAddress(host, protocol)
 	}
 	return ""
 }
@@ -591,7 +592,11 @@ func (t *TCPServerTransport) receiveMessage(conn net.Conn) {
 		msg, err := ParseMessage(reader)
 		if err != nil {
 			conn.Close()
-			zap.L().Error("Fail to parse message", zap.String("peerAddr", peerAddr), zap.String("peerPort", remotePort), zap.String("localAddr", localAddr), zap.String("localPort", localPort), zap.String("error", err.Error()))
+			if err.Error() == "EOF" {
+				zap.L().Info("Connection closed", zap.String("peerAddr", peerAddr), zap.String("peerPort", remotePort), zap.String("localAddr", localAddr), zap.String("localPort", localPort))
+			} else {
+				zap.L().Error("Fail to parse message", zap.String("peerAddr", peerAddr), zap.String("peerPort", remotePort), zap.String("localAddr", localAddr), zap.String("localPort", localPort), zap.String("error", err.Error()))
+			}
 			break
 		}
 		msg.ReceivedFrom = t

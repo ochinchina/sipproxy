@@ -702,11 +702,11 @@ func (m *Message) GetDialog() (string, error) {
 		return "", err
 	}
 
-	from_tag, err := fromSpec.GetTag()
+	from_tag, _ := fromSpec.GetTag()
 
-	if err != nil {
-		return "", err
-	}
+	//if err != nil {
+	//	return "", err
+	//}
 
 	to, err := m.GetTo()
 
@@ -714,11 +714,11 @@ func (m *Message) GetDialog() (string, error) {
 		return "", err
 	}
 
-	to_tag, err := to.GetTag()
+	to_tag, _ := to.GetTag()
 
-	if err != nil {
-		return "", err
-	}
+	//if err != nil {
+	//	return "", err
+	//}
 	from_addr, err := fromSpec.GetAddrSpec()
 	if err != nil {
 		return "", err
@@ -818,6 +818,10 @@ func (m *Message) GetClientTransaction() (string, error) {
 		return "", err
 	}
 
+	// There is no client transaction for ACK
+	if cseq.Method == "ACK" {
+		return "", fmt.Errorf("no client transaction for ACK")
+	}
 	// Get the TopVia Branch
 	branch, err := m.GetTopViaBranch()
 
@@ -851,16 +855,10 @@ func (m *Message) GetClientTransaction() (string, error) {
 //     transaction, except for ACK, where the method of the request
 //     that created the transaction is INVITE.
 func (m *Message) GetServerTransaction() (string, error) {
-	if m.IsResponse() {
-		return "", fmt.Errorf("no server transaction for response")
-	}
+	//if m.IsResponse() {
+	//	return "", fmt.Errorf("no server transaction for response")
+	//}
 
-	// the method of the request matches the one that created the
-	// transaction, except for ACK, where the method of the request
-	// that created the transaction is INVITE.
-	if m.request.method == "ACK" {
-		return "", fmt.Errorf("no server transaction for ACK")
-	}
 	// Get the top Via Branch
 	branch, err := m.GetTopViaBranch()
 
@@ -874,11 +872,19 @@ func (m *Message) GetServerTransaction() (string, error) {
 		return "", err
 	}
 
-	method := m.request.method
+	method, err := m.GetMethod()
+
+	if err != nil {
+		return "", err
+	}
+
+	// the method of the request matches the one that created the
+	// transaction, except for ACK, where the method of the request
+	// that created the transaction is INVITE.
 
 	// If the method is CANCEL, the method of the request that created the transaction is INVITE.
 	// The method of the request that created the transaction is INVITE.
-	if m.request.method == "CANCEL" || m.request.method == "ACK" {
+	if method == "CANCEL" || method == "ACK" {
 		method = "INVITE"
 	}
 
