@@ -238,14 +238,8 @@ func NewUDPClientTransport(host string, port int, localAddress string) (*UDPClie
 	return &UDPClientTransport{conn: nil, localAddr: laddr, remoteAddr: raddr}, nil
 }
 
-// NewUDPClientTransportWithConn create a UDP client transport with the specified conn and remoteAddr
-// localAddress is the local address to bind to
-func NewUDPClientTransportWithConn(conn *net.UDPConn, remoteAddr *net.UDPAddr) (*UDPClientTransport, error) {
-	localAddr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
-	if err != nil {
-		return nil, err
-	}
-	return &UDPClientTransport{conn: conn, localAddr: localAddr, remoteAddr: remoteAddr}, err
+func CreateUDPClientTransport(host string, port int, localAddress string) (ClientTransport, error) {
+	return clientTransportFactory.CreateUDPClientTransport(host, port, localAddress)
 }
 
 func (u *UDPClientTransport) connect() error {

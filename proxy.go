@@ -643,10 +643,17 @@ func (p *Proxy) findClientTransport(host string, port int, protocol string, tran
 	if serverTrans, ok := p.selfLearnRoute.GetRoute(host, protocol); ok {
 		udpServerTrans, ok := serverTrans.(*UDPServerTransport)
 		if ok {
-			remoteAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
-			if err == nil {
-				return NewUDPClientTransportWithConn(udpServerTrans.conn, remoteAddr)
+			// if the transport is UDP, create a new UDP client transport
+			localAddr := ":0"
+			if udpServerTrans.conn.LocalAddr() != nil {
+				localAddr = udpServerTrans.conn.LocalAddr().String()
+				localAddr, _, _ = net.SplitHostPort(localAddr)
+				localAddr = net.JoinHostPort(localAddr, "0")
 			}
+			if localAddr == "" {
+				localAddr = ":0"
+			}
+			return CreateUDPClientTransport(host, port, localAddr)
 		}
 	}
 
@@ -754,5 +761,4 @@ func (p *ProxyItem) Start() error {
 	}
 	return nil
 }
-
 
