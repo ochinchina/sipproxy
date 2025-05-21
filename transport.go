@@ -106,18 +106,83 @@ type FailOverClientTransport struct {
 	secondary ClientTransport
 }
 
+type ClientTransportFactory struct {
+	clientTransports map[string]ClientTransport
+}
+
+var clientTransportFactory *ClientTransportFactory = NewClientTransportFactory()
+
+func NewClientTransportFactory() *ClientTransportFactory {
+	return &ClientTransportFactory{clientTransports: make(map[string]ClientTransport)}
+}
+
+// CreateUDPClientTransport create a UDP client transport with host and port
+// localAddress is the local address to bind to
+func (ctf *ClientTransportFactory) CreateUDPClientTransport(host string, port int, localAddress string) (ClientTransport, error) {
+
+	key := fmt.Sprintf("udp:%s:%d:%s", host, port, localAddress)
+	if client, ok := ctf.clientTransports[key]; ok {
+		return client, nil
+	}
+	client, err := NewUDPClientTransport(host, port, localAddress)
+
+	if err == nil {
+		ctf.clientTransports[key] = client
+		return client, nil
+	} else {
+		return nil, err
+	}
+}
+
+// CreateTCPClientTransport create a TCP client transport with host and port
+// localAddress is the local address to bind to
+func (ctf *ClientTransportFactory) CreateTCPClientTransport(host string, port int, localAddress string, connectionEstablished ConnectionEstablishedFunc) (ClientTransport, error) {
+	key := fmt.Sprintf("tcp:%s:%d:%s", host, port, localAddress)
+	if client, ok := ctf.clientTransports[key]; ok {
+		return client, nil
+	}
+	client, err := NewTCPClientTransport(host, port, localAddress, connectionEstablished)
+
+	if err == nil {
+		ctf.clientTransports[key] = client
+		return client, nil
+	} else {
+		return nil, err
+	}
+}
+
+// RemoveUDPClientTransport remove the UDP client transport with host and port
+// localAddress is the local address to bind to
+func (ctf *ClientTransportFactory) RemoveUDPClientTransport(host string, port int, localAddress string) {
+	key := fmt.Sprintf("udp:%s:%d:%s", host, port, localAddress)
+	delete(ctf.clientTransports, key)
+}
+
+// RemoveTCPClientTransport remove the TCP client transport with host and port
+// localAddress is the local address to bind to
+func (ctf *ClientTransportFactory) RemoveTCPClientTransport(host string, port int, localAddress string) {
+	key := fmt.Sprintf("tcp:%s:%d:%s", host, port, localAddress)
+	delete(ctf.clientTransports, key)
+}
+
+// NewFailOverClientTransport create a fail over client transport with primary and secondary
+// client transport
 func NewFailOverClientTransport(primary ClientTransport, secondary ClientTransport) *FailOverClientTransport {
 	return &FailOverClientTransport{primary: primary, secondary: secondary}
 }
 
+// SetPrimary set the primary client transport
 func (fct *FailOverClientTransport) SetPrimary(primary ClientTransport) {
 	fct.primary = primary
 }
 
+// SetSecondary set the secondary client transport
 func (fct *FailOverClientTransport) SetSecondary(secondary ClientTransport) {
 	fct.secondary = secondary
 }
 
+// Send send message to the primary client transport, if failed, send to the secondary client transport
+// if both failed, return error
 func (fct *FailOverClientTransport) Send(msg *Message) error {
 	if fct.primary != nil {
 		err := fct.primary.Send(msg)
@@ -132,10 +197,12 @@ func (fct *FailOverClientTransport) Send(msg *Message) error {
 	return fmt.Errorf("fail to send message")
 }
 
+// IsConnected return true if the primary or secondary client transport is connected
 func (fct *FailOverClientTransport) IsConnected() bool {
 	return fct.primary != nil || fct.secondary != nil
 }
 
+// IsExpired return true if the primary or secondary client transport is expired
 func (fct *FailOverClientTransport) IsExpired() bool {
 	return (fct.primary != nil && fct.primary.IsExpired()) || (fct.secondary != nil && fct.secondary.IsExpired())
 }
@@ -171,6 +238,8 @@ func NewUDPClientTransport(host string, port int, localAddress string) (*UDPClie
 	return &UDPClientTransport{conn: nil, localAddr: laddr, remoteAddr: raddr}, nil
 }
 
+// NewUDPClientTransportWithConn create a UDP client transport with the specified conn and remoteAddr
+// localAddress is the local address to bind to
 func NewUDPClientTransportWithConn(conn *net.UDPConn, remoteAddr *net.UDPAddr) (*UDPClientTransport, error) {
 	localAddr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
 	if err != nil {
@@ -181,7 +250,7 @@ func NewUDPClientTransportWithConn(conn *net.UDPConn, remoteAddr *net.UDPAddr) (
 
 func (u *UDPClientTransport) connect() error {
 	if u.conn == nil {
-		conn, err := net.ListenUDP("udp", u.localAddr)
+		conn, err := net.DialUDP("udp", u.localAddr, u.remoteAddr)
 		if err != nil {
 			zap.L().Error("Fail to listen on UDP", zap.String("localAddr", u.localAddr.String()), zap.String("error", err.Error()))
 			return err
@@ -191,6 +260,8 @@ func (u *UDPClientTransport) connect() error {
 	return nil
 
 }
+
+// Send send message to the remote address
 func (u *UDPClientTransport) Send(msg *Message) error {
 	err := u.connect()
 	if err != nil {
@@ -200,11 +271,11 @@ func (u *UDPClientTransport) Send(msg *Message) error {
 	if err != nil {
 		return err
 	}
-	_, err = u.conn.WriteToUDP(b, u.remoteAddr)
+	_, err = u.conn.Write(b)
 	if err == nil {
-		zap.L().Debug("Succeed to send message", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()))
+		zap.L().Debug("Succeed to send message through UDP", zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()))
 	} else {
-		zap.L().Error("Fail to send message", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()), zap.String("error", err.Error()))
+		zap.L().Error("Fail to send message", zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()), zap.String("error", err.Error()))
 	}
 	return err
 
@@ -260,6 +331,8 @@ func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int
 	return trans, nil
 }
 
+// RemoveTransport remove the client transport by the protocol, host and port
+// transId is used to identify the transport
 func (c *ClientTransportMgr) RemoveTransport(protocol string, host string, port int, transId string) {
 	c.Lock()
 	defer c.Unlock()
@@ -288,7 +361,7 @@ func (c *ClientTransportMgr) createClientTransport(protocol string, host string,
 	var localAddress string = c.getLocalAddress(host, protocol)
 
 	if protocol == "udp" {
-		client, err = NewUDPClientTransport(host, port, localAddress)
+		client, err = clientTransportFactory.CreateUDPClientTransport(host, port, localAddress)
 		if err == nil {
 			return NewFailOverClientTransport(client, nil), nil
 		} else {
@@ -299,7 +372,7 @@ func (c *ClientTransportMgr) createClientTransport(protocol string, host string,
 		if trans, ok := c.transports[addr]; ok {
 			client = trans.secondary
 		} else {
-			client, err = NewTCPClientTransport(host, port, localAddress, c.connectionEstablished)
+			client, err = clientTransportFactory.CreateTCPClientTransport(host, port, localAddress, c.connectionEstablished)
 			if err == nil {
 				c.transports[addr] = NewFailOverClientTransport(nil, client)
 			} else {
@@ -436,7 +509,7 @@ func (u *UDPServerTransport) Send(host string, port int, msg *Message) error {
 	}
 	n, err := u.conn.WriteToUDP(b, remoteAddr)
 	if err == nil {
-		zap.L().Info("Succeed to send message", zap.Int("length", n), zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddress", remoteAddr.String()))
+		zap.L().Info("Succeed to send message through UDP", zap.Int("length", n), zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddress", remoteAddr.String()))
 	} else {
 		zap.L().Error("Fail to send message", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddress", remoteAddr.String()), zap.String("error", err.Error()))
 	}
