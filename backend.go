@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-redis/redis"
 	"go.uber.org/zap"
 )
 
@@ -473,24 +474,136 @@ type ExpireBackend struct {
 	backend Backend
 	expire  time.Time
 }
-type SessionBasedBackend struct {
+type SessionBasedBackend interface {
+	GetBackend(sessionId string) (Backend, error)
+	AddBackend(sessionId string, backend Backend, expireSeconds int)
+	RemoveSession(sessionId string)
+}
+
+type LocalSessionBasedBackend struct {
 	timeout time.Duration
 	// map between dialog and the backend
 	backends      map[string]*ExpireBackend
 	nextCleanTime time.Time
 }
 
-func NewSessionBasedBackend(timeoutSeconds int64) *SessionBasedBackend {
+type MasterSlaveRedisSessionBasedBackend struct {
+	// rdbs is a list of Redis clients.
+	// It is used to connect to the Redis server and subscribe to backend updates.
+	rdbs []*redis.Client
+	// timeout is the dialog timeout in seconds.
+	// It is used to set the expire time for the session in Redis.
+	timeout time.Duration
+	// redisChannel is the Redis channel to publish/subscribe to backend updates.
+	// It is used to receive backend updates from Redis.
+	redisChannel string
+	// masterIndex is the index of the master Redis client.
+	// It is used to publish backend updates to the master Redis client.
+	masterIndex int
+	// sessionBackendAddrs is a map between sessionId and backend address.
+	// The address is in the format of "tcp://host:port" or "udp://host:port".
+	sessionBackendAddrs *RedisSessionBackendAddrMgr
+	// findBackendByAddr is a function to find the backend by address.
+	findBackendByAddr func(string) (Backend, error)
+
+	// retryTimeout is the timeout in milliseconds for retrying to connect to Redis.
+	retryTimeout int
+}
+
+type RedisSessionBackendAddrMgr struct {
+	sync.Mutex
+	// sessionBackends is a map between sessionId and address info.
+	sessionBackendAddrs map[string]struct {
+		address string
+		expires int64 // expires is the expiration time in seconds since epoch
+	}
+
+	nextCleanTime int64
+}
+type CompositeSessionBasedBackend struct {
+	backends []SessionBasedBackend
+}
+
+func NewRedisSessionBackendAddrMgr() *RedisSessionBackendAddrMgr {
+	return &RedisSessionBackendAddrMgr{
+		sessionBackendAddrs: make(map[string]struct {
+			address string
+			expires int64
+		}),
+		nextCleanTime: 0,
+	}
+}
+
+func (rsb *RedisSessionBackendAddrMgr) GetBackendAddress(sessionId string) (string, error) {
+	rsb.Lock()
+	defer rsb.Unlock()
+
+	rsb.cleanExpiredSession()
+
+	if addrInfo, ok := rsb.sessionBackendAddrs[sessionId]; ok && addrInfo.expires > time.Now().Unix() {
+		return addrInfo.address, nil
+	}
+	return "", fmt.Errorf("no backend address found for session %s", sessionId)
+}
+
+// SetBackendAddress sets the backend address for the given sessionId.
+// It updates the sessionBackendAddrs map with the sessionId and address and expires.
+func (rsb *RedisSessionBackendAddrMgr) SetBackendAddress(sessionId string, address string, expires int64) {
+	rsb.Lock()
+	defer rsb.Unlock()
+
+	rsb.sessionBackendAddrs[sessionId] = struct {
+		address string
+		expires int64
+	}{
+		address: address,
+		expires: expires + time.Now().Unix(), // Set the expiration time to the current time plus the expires value
+	}
+}
+
+func (rsb *RedisSessionBackendAddrMgr) RemoveBackend(sessionId string) error {
+	rsb.Lock()
+	defer rsb.Unlock()
+
+	if _, exists := rsb.sessionBackendAddrs[sessionId]; exists {
+		delete(rsb.sessionBackendAddrs, sessionId)
+		return nil
+	} else {
+		zap.L().Warn("Session backend address not found for removal", zap.String("sessionId", sessionId))
+		return fmt.Errorf("session backend address not found for session %s", sessionId)
+	}
+}
+
+func (rsb *RedisSessionBackendAddrMgr) cleanExpiredSession() {
+	if rsb.nextCleanTime > time.Now().Unix() {
+		return
+	}
+	rsb.nextCleanTime = time.Now().Unix() + 60 // Clean expired sessions every 60 seconds
+
+	expiredSessions := make([]string, 0)
+	for sessionId, addrInfo := range rsb.sessionBackendAddrs {
+		if addrInfo.expires <= time.Now().Unix() {
+			expiredSessions = append(expiredSessions, sessionId)
+		}
+	}
+
+	for _, sessionId := range expiredSessions {
+		delete(rsb.sessionBackendAddrs, sessionId)
+		zap.L().Info("remove expired session backend address", zap.String("sessionId", sessionId))
+	}
+}
+
+func NewLocalSessionBasedBackend(timeoutSeconds int64) *LocalSessionBasedBackend {
 	zap.L().Info("set the dialog timeout ", zap.Int64("timeout", timeoutSeconds))
 
-	return &SessionBasedBackend{timeout: time.Duration(timeoutSeconds) * time.Second,
+	return &LocalSessionBasedBackend{timeout: time.Duration(timeoutSeconds) * time.Second,
 		backends:      make(map[string]*ExpireBackend),
 		nextCleanTime: time.Now().Add(time.Duration(timeoutSeconds) * time.Second)}
 }
 
 // GetBackend returns the backend related with the sessionId
 // and check if the backend is expired. If the backend is expired, it will be removed from the map.
-func (dbb *SessionBasedBackend) GetBackend(sessionId string) (Backend, error) {
+func (dbb *LocalSessionBasedBackend) GetBackend(sessionId string) (Backend, error) {
 	if value, ok := dbb.backends[sessionId]; ok {
 		if value.expire.After(time.Now()) {
 			return value.backend, nil
@@ -503,7 +616,7 @@ func (dbb *SessionBasedBackend) GetBackend(sessionId string) (Backend, error) {
 
 // AddBackend adds a backend for the sessionId and set the expire time
 // for the backend. The expire time is set to the timeout value if it is greater than the timeout value.
-func (dbb *SessionBasedBackend) AddBackend(sessionId string, backend Backend, expireSeconds int) {
+func (dbb *LocalSessionBasedBackend) AddBackend(sessionId string, backend Backend, expireSeconds int) {
 	timeout := dbb.timeout
 	// check if the expireSeconds is greater than the timeout value
 	// if it is, set the timeout value to the expireSeconds
@@ -518,11 +631,11 @@ func (dbb *SessionBasedBackend) AddBackend(sessionId string, backend Backend, ex
 
 // RemoveSession removes the backend related with the sessionId
 // and closes the backend connection.
-func (dbb *SessionBasedBackend) RemoveSession(sessionId string) {
+func (dbb *LocalSessionBasedBackend) RemoveSession(sessionId string) {
 	delete(dbb.backends, sessionId)
 }
 
-func (dbb *SessionBasedBackend) cleanExpiredSession() {
+func (dbb *LocalSessionBasedBackend) cleanExpiredSession() {
 	if dbb.nextCleanTime.After(time.Now()) {
 		return
 	}
@@ -538,6 +651,264 @@ func (dbb *SessionBasedBackend) cleanExpiredSession() {
 
 	for k := range expiredSessions {
 		delete(dbb.backends, k)
+	}
+}
+
+// createRedisClient creates a Redis client with the given address.
+// It checks if the address is valid and if the DB number is valid (>= 0).
+// If the address is empty or the DB number is invalid, it logs an error and returns nil.
+func createRedisClient(address RedisAddress) *redis.Client {
+	if address.Address == "" {
+		zap.L().Error("Redis address is empty, please check your configuration")
+		return nil
+	}
+	if address.Db < 0 {
+		zap.L().Error("Redis DB number must be greater than or equal to 0", zap.Int("db", address.Db))
+		return nil
+	}
+	return redis.NewClient(&redis.Options{
+		Addr:     address.Address,
+		Password: address.Password, // no password set
+		DB:       address.Db,       // use default DB,
+	})
+
+}
+
+// NewMasterSlaveRedisSessionBasedBackend creates a new MasterSlaveRedisSessionBasedBackend instance.
+// It initializes the Redis clients based on the provided RedisSessionStore configuration.
+// The `timeoutSeconds` parameter specifies the timeout for session expiration.
+// The `findBackendByAddr` function is used to find the backend by its address.
+func NewMasterSlaveRedisSessionBasedBackend(redisSessionStore RedisSessionStore,
+	timeoutSeconds int64,
+	// findBackendByAddr is a function to find the backend by address.
+	findBackendByAddr func(backendAddr string) (Backend, error)) *MasterSlaveRedisSessionBasedBackend {
+
+	if len(redisSessionStore.Addresses) == 0 {
+		zap.L().Error("No Redis addresses provided, please check your configuration")
+		return nil
+	}
+
+	rdbs := make([]*redis.Client, 0)
+
+	for _, addr := range redisSessionStore.Addresses {
+		rdb := createRedisClient(addr)
+		if rdb != nil {
+			rdbs = append(rdbs, rdb)
+		}
+	}
+
+	channel := redisSessionStore.Channel
+	if channel == "" {
+		channel = "sipproxy:session" // Default channel name
+	}
+
+	rsb := &MasterSlaveRedisSessionBasedBackend{
+		rdbs:                rdbs,
+		timeout:             time.Duration(timeoutSeconds) * time.Second,
+		masterIndex:         0, // Default to the first Redis client as master
+		redisChannel:        channel,
+		findBackendByAddr:   findBackendByAddr,
+		sessionBackendAddrs: NewRedisSessionBackendAddrMgr(),
+		retryTimeout: func() int {
+			if redisSessionStore.RetryTimeout <= 0 {
+				return 5
+			}
+			return redisSessionStore.RetryTimeout
+		}(),
+	}
+	rsb.start()
+	return rsb
+}
+
+// start initializes the Redis clients and subscribes to backend updates.
+// It should be called after creating the MasterSlaveRedisSessionBasedBackend instance.
+func (msrsb *MasterSlaveRedisSessionBasedBackend) start() {
+	for _, rdb := range msrsb.rdbs {
+		go msrsb.subscribeToBackendUpdates(rdb)
+	}
+
+}
+
+// GetBackend retrieves the backend associated with the given sessionId.
+// It uses the sessionBackendAddrs manager to get the backend address for the sessionId.
+func (msrsb *MasterSlaveRedisSessionBasedBackend) GetBackend(sessionId string) (Backend, error) {
+	zap.L().Info("get backend for session from redis", zap.String("sessionId", sessionId))
+
+	backendAddr, err := msrsb.sessionBackendAddrs.GetBackendAddress(sessionId)
+
+	if err == nil && msrsb.findBackendByAddr != nil {
+		return msrsb.findBackendByAddr(backendAddr)
+	}
+
+	return nil, fmt.Errorf("no Redis client available to get backend for session %s", sessionId)
+}
+
+func (rsb *MasterSlaveRedisSessionBasedBackend) subscribeToBackendUpdates(rdb *redis.Client) {
+	for {
+		pubsub := rsb.doSubscribe(rdb)
+		if pubsub != nil {
+			defer pubsub.Close()
+			rsb.receiveSubscribeMessage(pubsub)
+			time.Sleep(time.Duration(rsb.retryTimeout) * time.Second) // Wait before retrying subscription
+		} else {
+			time.Sleep(time.Duration(rsb.retryTimeout) * time.Second) // Wait before retrying subscription
+			zap.L().Warn("Retrying subscription to Redis channel", zap.String("channel", rsb.redisChannel), zap.String("address", rdb.Options().Addr))
+		}
+	}
+
+}
+
+func (rsb *MasterSlaveRedisSessionBasedBackend) doSubscribe(rdb *redis.Client) *redis.PubSub {
+	pubsub := rdb.Subscribe(rsb.redisChannel)
+	if pubsub == nil {
+		zap.L().Error("Failed to subscribe to Redis channel", zap.String("address", rdb.Options().Addr))
+		return nil
+	}
+
+	// Wait for the subscription to be confirmed
+	_, err := pubsub.ReceiveTimeout(time.Duration(2 * time.Second))
+
+	if err != nil {
+		zap.L().Error("Failed to receive subscription confirmation", zap.String("address", rdb.Options().Addr), zap.Error(err))
+		return nil
+	}
+
+	zap.L().Info("Subscribed to Redis channel for backend updates", zap.String("channel", rsb.redisChannel), zap.String("address", rdb.Options().Addr))
+
+	return pubsub
+}
+
+// receiveSubscribeMessage listens for messages on the Redis PubSub channel.
+// It processes each message by calling sessionBackendUpdated to handle the session updates.
+func (rsb *MasterSlaveRedisSessionBasedBackend) receiveSubscribeMessage(pubsub *redis.PubSub) {
+	for {
+		msg, err := pubsub.ReceiveMessage()
+		if err == nil {
+			rsb.sessionBackendUpdated(msg.Payload)
+		} else {
+			zap.L().Error("Failed to receive message from Redis", zap.Error(err))
+			break // Exit the loop if an error occurs
+		}
+	}
+
+}
+
+// sessionBackendUpdated processes the received message from Redis.
+// It expects messages in the format "add <sessionId> <address> <expires>" or "delete <sessionId>".
+// It updates the sessionBackendAddrs manager accordingly.
+// If the message is an "add" command, it adds the sessionId and address to the manager.
+// If the message is a "delete" command, it removes the sessionId from the manager.
+func (rsb *MasterSlaveRedisSessionBasedBackend) sessionBackendUpdated(msg string) {
+	zap.L().Info("Received backend update from redis", zap.String("message", msg))
+	// Parse the message payload to extract sessionId and address
+	// Expected format: "add <sessionId> <address>" or "delete <sessionId>"
+	fields := strings.Split(msg, " ")
+	if fields[0] == "add" && len(fields) == 4 {
+		// Handle session addition
+		sessionId := fields[1]
+		address := fields[2]
+		expires, _ := strconv.ParseInt(fields[3], 10, 32)
+		// Convert expires to an integer
+		rsb.sessionBackendAddrs.SetBackendAddress(sessionId, address, expires)
+		zap.L().Info("Get session backend address from redis", zap.String("sessionId", sessionId), zap.String("address", address))
+	} else if fields[0] == "delete" && len(fields) == 2 {
+		// Handle session deletion
+		sessionId := fields[1]
+		err := rsb.sessionBackendAddrs.RemoveBackend(sessionId)
+		if err == nil {
+			zap.L().Info("Deleted session backend address from redis", zap.String("sessionId", sessionId))
+		} else {
+			zap.L().Warn("Session backend address not found for deletion in redis", zap.String("sessionId", sessionId))
+		}
+	}
+}
+
+// AddBackend adds a backend for the sessionId and set the expire time.
+// It publishes a message to the Redis channel in the format "add <sessionId> <address>".
+func (rsb *MasterSlaveRedisSessionBasedBackend) AddBackend(sessionId string, backend Backend, expireSeconds int) {
+	zap.L().Info("add backend for session to redis", zap.String("sessionId", sessionId), zap.String("backend", backend.GetAddress()))
+
+	timeout := rsb.timeout
+	// check if the expireSeconds is greater than the timeout value
+	// if it is, set the timeout value to the expireSeconds
+	if float64(expireSeconds) > timeout.Seconds() {
+		timeout = time.Duration(expireSeconds) * time.Second
+	}
+	expire := int64(timeout.Seconds())
+	// Set the backend address in Redis with an expiration time
+	rsb.ForEachRedis(func(rdb *redis.Client) error {
+		return rdb.Publish(rsb.redisChannel, fmt.Sprintf("add %s %s %d", sessionId, backend.GetAddress(), expire)).Err()
+	})
+}
+
+func (rsb *MasterSlaveRedisSessionBasedBackend) RemoveSession(sessionId string) {
+	zap.L().Info("remove backend for session from redis", zap.String("sessionId", sessionId))
+
+	rsb.ForEachRedis(func(rdb *redis.Client) error {
+		return rdb.Publish(rsb.redisChannel, fmt.Sprintf("delete %s", sessionId)).Err()
+	})
+	rsb.sessionBackendAddrs.RemoveBackend(sessionId)
+}
+
+func (rsb *MasterSlaveRedisSessionBasedBackend) ForEachRedis(process func(rdb *redis.Client) error) error {
+	if len(rsb.rdbs) == 0 {
+		return fmt.Errorf("no Redis clients available")
+	}
+
+	n := len(rsb.rdbs)
+	for i := range n {
+		rdb := rsb.rdbs[(rsb.masterIndex+i)%n]
+		if rdb == nil {
+			zap.L().Warn("Redis client is nil, skipping", zap.Int("index", (rsb.masterIndex+i)%n))
+			continue // Skip this Redis client if it's nil
+		}
+		err := process(rdb)
+		if err != nil {
+			if strings.Contains(err.Error(), "READONLY") {
+				zap.L().Warn("Redis is in read-only mode, skipping processing", zap.String("address", rdb.Options().Addr))
+				continue // Skip this Redis client and try the next one
+			}
+			return fmt.Errorf("error processing Redis client %s: %w", rdb.Options().Addr, err)
+		} else if i > 0 {
+			rsb.masterIndex = (rsb.masterIndex + i) % n // Update master index to the next available Redis client
+			zap.L().Info("Updated redis master index", zap.Int("masterIndex", rsb.masterIndex))
+			return nil // Exit the loop if processing is successful
+		}
+	}
+	return fmt.Errorf("failed to process any Redis client")
+}
+
+func NewCompositeSessionBasedBackend(backends []SessionBasedBackend) *CompositeSessionBasedBackend {
+	return &CompositeSessionBasedBackend{backends: backends}
+}
+
+func (csb *CompositeSessionBasedBackend) GetBackend(sessionId string) (Backend, error) {
+	for _, backend := range csb.backends {
+		if backend != nil {
+			b, err := backend.GetBackend(sessionId)
+			if err == nil && b != nil {
+				return b, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("no backend found for session %s", sessionId)
+}
+
+// AddBackend adds a backend for the sessionId and set the expire time
+func (csb *CompositeSessionBasedBackend) AddBackend(sessionId string, backend Backend, expireSeconds int) {
+	for _, b := range csb.backends {
+		if b != nil {
+			b.AddBackend(sessionId, backend, expireSeconds)
+		}
+	}
+}
+
+// RemoveSession removes the backend related with the sessionId
+func (csb *CompositeSessionBasedBackend) RemoveSession(sessionId string) {
+	for _, b := range csb.backends {
+		if b != nil {
+			b.RemoveSession(sessionId)
+		}
 	}
 }
 

@@ -1,0 +1,30 @@
+proxies:
+- name: ".+"
+  no-received: true
+  redis-session-store:
+    retry-timeout: 1
+    addresses:
+    - address: 192.168.56.111:6379
+      db: 0
+    - address: 192.168.56.111:7777
+      db: 0
+    channel: sipproxy
+  listens:
+  - address: 10.243.69.71
+    udp-port: 5060
+    via: udp://127.0.0.1:5060
+    backends:
+    - address: udp://127.0.0.1:5061
+    - address: udp://127.0.0.1:5062
+  - address: 10.243.69.71
+    udp-port: 5061
+    via: udp://127.0.0.1:5060
+    backends:
+    - address: udp://127.0.0.1:5061
+    - address: udp://127.0.0.1:5062
+  - address: 127.0.0.1
+    udp-port: 5060
+    backends:
+    - address: udp://127.0.0.1:5061
+    - address: udp://127.0.0.1:5062
+

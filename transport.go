@@ -208,8 +208,15 @@ func (fct *FailOverClientTransport) IsExpired() bool {
 }
 
 type UDPClientTransport struct {
-	conn       *net.UDPConn
-	localAddr  *net.UDPAddr
+	// if the connection is pre-connected, if true, the conn is pre-connected connection, otherwise, it is not a pre-connected connection
+	preConnected bool
+	// conn       is the UDP connection to send message
+	conn *net.UDPConn
+	// localAddr  is the local address to bind to or nil if not specified:
+	// - not nil, the conn is pre-connected connection, conn.Write() should be used to send message to remote
+	// - nil, the conn is not a pre-connected connection, conn.WriteToUDP() should be used to send message to remote
+	localAddr *net.UDPAddr
+	// remoteAddr is the remote address to send message to
 	remoteAddr *net.UDPAddr
 }
 
@@ -235,7 +242,11 @@ func NewUDPClientTransport(host string, port int, localAddress string) (*UDPClie
 	if len(localAddress) > 0 {
 		laddr, _ = net.ResolveUDPAddr("udp", net.JoinHostPort(localAddress, "0"))
 	}
-	return &UDPClientTransport{conn: nil, localAddr: laddr, remoteAddr: raddr}, nil
+	return &UDPClientTransport{preConnected: true, conn: nil, localAddr: laddr, remoteAddr: raddr}, nil
+}
+
+func NewUDPClientTransportWithConn(host string, port int, conn *net.UDPConn) (*UDPClientTransport, error) {
+	return &UDPClientTransport{preConnected: false, conn: conn, localAddr: nil, remoteAddr: &net.UDPAddr{IP: net.ParseIP(host), Port: port}}, nil
 }
 
 func CreateUDPClientTransport(host string, port int, localAddress string) (ClientTransport, error) {
@@ -265,7 +276,11 @@ func (u *UDPClientTransport) Send(msg *Message) error {
 	if err != nil {
 		return err
 	}
-	_, err = u.conn.Write(b)
+	if u.preConnected {
+		_, err = u.conn.Write(b)
+	} else {
+		_, err = u.conn.WriteToUDP(b, u.remoteAddr)
+	}
 	if err == nil {
 		zap.L().Debug("Succeed to send message through UDP", zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()))
 	} else {
@@ -355,7 +370,18 @@ func (c *ClientTransportMgr) createClientTransport(protocol string, host string,
 	var localAddress string = c.getLocalAddress(host, protocol)
 
 	if protocol == "udp" {
-		client, err = clientTransportFactory.CreateUDPClientTransport(host, port, localAddress)
+		serverTransport, success := c.selfLearnRoute.GetRoute(host, protocol)
+		if success && serverTransport != nil {
+			if udpServerTransport, ok := serverTransport.(*UDPServerTransport); ok {
+				client, err = NewUDPClientTransportWithConn(host, port, udpServerTransport.conn)
+			}
+		}
+
+		if client == nil || err != nil {
+			// if self learn route is available, use it to create a new UDP client transport
+			// if self learn route is not available, create a new UDP client transport
+			client, err = clientTransportFactory.CreateUDPClientTransport(host, port, localAddress)
+		}
 		if err == nil {
 			return NewFailOverClientTransport(client, nil), nil
 		} else {

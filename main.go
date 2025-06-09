@@ -43,21 +43,46 @@ type ListenConfig struct {
 	Backends []BackendConfig
 }
 
-// ProxyConfig is the configuration for a SIP proxy
+type RedisAddress struct {
+	// Redis address in format "host:port"
+	// For example: "127.0.0.1:6379"
+	Address string
+	// Redis password
+	// If not specified, the default value is empty string
+	// If the Redis server does not require a password, leave it empty
+	Password string `yaml:"password,omitempty"`
+	// Redis database index
+	Db int `yaml:"db,omitempty"`
+}
 
+type RedisSessionStore struct {
+	// Redis addresses in the cluster
+	Addresses []RedisAddress
+	// Redis Channel for session events updates
+	// If not specified, the default value is "sipproxy:session"
+	Channel string `yaml:"channel,omitempty"`
+
+	// Redis retry timeout in seconds
+	// If not specified, the default value is 5 seconds
+	RetryTimeout int `yaml:"retry-timeout,omitempty"`
+}
+
+// ProxyConfig is the configuration for a SIP proxy
 type ProxyConfig struct {
 	Name          string
-	DialogTimeout int `yaml:"dialogTimeout,omitempty"`
+	DialogTimeout int `yaml:"dialog-timeout,omitempty"`
 	// Yes or True: keep the next hop route in the route header
 	// No or False: remove the next hop route in the route header
 	// If not specified, the default value is "yes"
-	KeepNextHopRoute string `yaml:"keepNextHopRoute,omitempty"`
+	KeepNextHopRoute string `yaml:"keep-next-hop-route,omitempty"`
 	NoReceived       bool   `yaml:"no-received,omitempty"`
 	// True if the route must be recorded in the route header
 	// False: no record-route will be added to the header if there is any record-route in the header
 	// If not specified, the route must be recorded in the route header
-	MustRecordRoute bool `yaml:"must-record-route,omitempty"`
-	Listens         []ListenConfig
+	MustRecordRoute   bool               `yaml:"must-record-route,omitempty"`
+	RedisSessionStore *RedisSessionStore `yaml:"redis-session-store,omitempty"`
+	// The listens is a list of listen configurations
+	Listens []ListenConfig
 	// The route is a list of destination and next hop
 	// The destination is a regular expression
 	Route []struct {
@@ -73,7 +98,8 @@ type ProxiesConfigure struct {
 		Addr string
 	}
 	Proxies []ProxyConfig
-	Hosts   []HostIp
+	// Global hosts IPs, used for resolving host names in the SIP messages
+	Hosts []HostIp
 }
 
 func init() {
@@ -132,13 +158,28 @@ func loadConfigFromReader(reader io.Reader) (*ProxiesConfigure, error) {
 }
 
 func loadConfig(fileName string) (*ProxiesConfigure, error) {
-	f, err := os.Open(fileName)
+	data, err := os.ReadFile(fileName)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("configuration file %s is empty", fileName)
+	}
+	// Check if the file is a valid YAML file
+	p := &ProxiesConfigure{}
+
+	err = yaml.Unmarshal(data, p)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse configuration file %s: %w", fileName, err)
+	}
+	return p, err
+	/*f, err := os.Open(fileName)
 	if err != nil {
 		return nil, err
 	}
 
 	defer f.Close()
-	return loadConfigFromReader(f)
+	return loadConfigFromReader(f)*/
 
 }
 
@@ -207,7 +248,9 @@ func startProxy(config ProxyConfig, preConfigRoute *PreConfigRoute, resolver *Pr
 		resolver,
 		selfLearnRoute,
 		!config.NoReceived,
-		config.MustRecordRoute)
+		config.MustRecordRoute,
+		config.RedisSessionStore,
+	)
 
 	err := proxy.Start()
 	if err == nil {
@@ -239,6 +282,7 @@ func createPreConfigHostResolver(globalHostIPs []HostIp, config ProxyConfig) *Pr
 	}
 	return resolver
 }
+
 func main() {
 	app := &cli.App{
 		Name:  "sipproxy",

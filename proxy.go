@@ -130,7 +130,7 @@ type Proxy struct {
 	mustRecordRoute     bool
 	msgChannel          chan *RawMessage
 	connAcceptedChannel chan net.Conn
-	sessionBackends     *SessionBasedBackend
+	sessionBackends     SessionBasedBackend
 }
 
 func NewProxy(name string,
@@ -141,7 +141,8 @@ func NewProxy(name string,
 	resolver *PreConfigHostResolver,
 	selfLearnRoute *SelfLearnRoute,
 	receivedSupport bool,
-	mustRecordRoute bool) *Proxy {
+	mustRecordRoute bool,
+	redisSessionStore *RedisSessionStore) *Proxy {
 
 	proxy := &Proxy{myName: NewMyName(name),
 		listenConfigs:       listenConfigs,
@@ -155,7 +156,7 @@ func NewProxy(name string,
 		mustRecordRoute:     mustRecordRoute,
 		msgChannel:          make(chan *RawMessage, 10000),
 		connAcceptedChannel: make(chan net.Conn),
-		sessionBackends:     NewSessionBasedBackend(dialogExpire)}
+		sessionBackends:     nil}
 
 	for _, listenConf := range listenConfigs {
 		item, err := NewProxyItem(listenConf, receivedSupport, proxy, selfLearnRoute, proxy)
@@ -170,6 +171,26 @@ func NewProxy(name string,
 	}
 
 	proxy.clientTransMgr = NewClientTransportMgr(selfLearnRoute, connectionEstablished)
+
+	if redisSessionStore != nil {
+		findBackendByAddr := func(backendAddr string) (Backend, error) {
+			// find the backend by address
+			for _, item := range proxy.items {
+				backend, err := item.findBackendByAddr(backendAddr)
+				if err == nil {
+					zap.L().Info("succeed to find backend by address get from redis", zap.String("backendAddr", backendAddr))
+					return backend, nil
+				}
+			}
+			return nil, fmt.Errorf("fail to find backend by address %s", backendAddr)
+		}
+		zap.L().Info("use redis session store for dialog and transaction", zap.Any("redisAddr", redisSessionStore), zap.Int64("dialogExpire", dialogExpire))
+		sessionBackends := []SessionBasedBackend{NewLocalSessionBasedBackend(dialogExpire), NewMasterSlaveRedisSessionBasedBackend(*redisSessionStore, dialogExpire, findBackendByAddr)}
+		proxy.sessionBackends = NewCompositeSessionBasedBackend(sessionBackends)
+	} else {
+		zap.L().Info("use local session store for dialog and transaction")
+		proxy.sessionBackends = NewLocalSessionBasedBackend(dialogExpire)
+	}
 
 	go proxy.receiveAndProcessMessage()
 	return proxy
@@ -313,8 +334,8 @@ func (p *Proxy) handleSession(msg *Message) {
 	}
 
 	if serverTransId, err := msg.GetServerTransaction(); err == nil {
-		if backend, ok := p.sessionBackends.backends[serverTransId]; ok {
-			addr := backend.backend.GetAddress()
+		if backend, err := p.sessionBackends.GetBackend(serverTransId); err == nil {
+			addr := backend.GetAddress()
 			if msg.IsFinalResponse() {
 				zap.L().Info("transaction is finished, remove backend by transId", zap.String("backendAddr", addr), zap.String("serverTransaction", serverTransId))
 				p.sessionBackends.RemoveSession(serverTransId)
@@ -326,7 +347,7 @@ func (p *Proxy) handleSession(msg *Message) {
 					dialog, _ := msg.GetDialog()
 					if dialog != "" {
 						zap.L().Info("dialog is bind to backend", zap.String("backendAddr", addr), zap.String("dialog", dialog))
-						p.sessionBackends.AddBackend(dialog, backend.backend, msg.GetExpires(0))
+						p.sessionBackends.AddBackend(dialog, backend, msg.GetExpires(0))
 					}
 				case "BYE":
 					dialog, _ := msg.GetDialog()
@@ -367,11 +388,11 @@ func (p *Proxy) handleMessage(protocol string, msg *Message, backend Backend, vi
 		// if the response of SUBSCRIBE to the backend
 		if method, err := msg.GetMethod(); err == nil && method == "SUBSCRIBE" {
 			if serverTransId, err := msg.GetServerTransaction(); err == nil {
-				if tmpBackend, ok := p.sessionBackends.backends[serverTransId]; ok {
+				if tmpBackend, err := p.sessionBackends.GetBackend(serverTransId); err == nil {
 					if dialog, err := msg.GetDialog(); err == nil {
-						zap.L().Info("bind the dialog to the response", zap.String("dialog", dialog), zap.String("backend", tmpBackend.backend.GetAddress()))
+						zap.L().Info("bind the dialog to the response", zap.String("dialog", dialog), zap.String("backend", tmpBackend.GetAddress()))
 
-						p.sessionBackends.AddBackend(dialog, tmpBackend.backend, msg.GetExpires(0))
+						p.sessionBackends.AddBackend(dialog, tmpBackend, msg.GetExpires(0))
 					}
 				}
 			}
@@ -724,6 +745,14 @@ func (p *ProxyItem) FindTransport(cond func(serverTransport ServerTransport) boo
 	}
 	return nil, fmt.Errorf("fail to find transport")
 
+}
+
+func (p *ProxyItem) findBackendByAddr(address string) (Backend, error) {
+	if p.backend == nil {
+		return nil, fmt.Errorf("no backend for proxy item")
+	}
+
+	return p.backend.GetBackend(address) // ensure the backend is initialized
 }
 
 func (p *ProxyItem) connectionEstablished(conn net.Conn, receivedSupport bool, selfLearnRoute *SelfLearnRoute) {
