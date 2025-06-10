@@ -851,27 +851,29 @@ func (rsb *MasterSlaveRedisSessionBasedBackend) RemoveSession(sessionId string) 
 }
 
 func (rsb *MasterSlaveRedisSessionBasedBackend) ForEachRedis(process func(rdb *redis.Client) error) error {
-	if len(rsb.rdbs) == 0 {
+	n := len(rsb.rdbs)
+
+	if n == 0 {
 		return fmt.Errorf("no Redis clients available")
 	}
 
-	n := len(rsb.rdbs)
 	for i := range n {
-		rdb := rsb.rdbs[(rsb.masterIndex+i)%n]
+		index := (rsb.masterIndex + i) % n // Calculate the index of the Redis client to use
+		rdb := rsb.rdbs[index]
 		if rdb == nil {
-			zap.L().Warn("Redis client is nil, skipping", zap.Int("index", (rsb.masterIndex+i)%n))
+			zap.L().Warn("Redis client is nil, skipping", zap.Int("index", index))
 			continue // Skip this Redis client if it's nil
 		}
 		err := process(rdb)
 		if err != nil {
 			if strings.Contains(err.Error(), "READONLY") {
 				zap.L().Warn("Redis is in read-only mode, skipping processing", zap.String("address", rdb.Options().Addr))
-				continue // Skip this Redis client and try the next one
 			}
-			return fmt.Errorf("error processing Redis client %s: %w", rdb.Options().Addr, err)
-		} else if i > 0 {
-			rsb.masterIndex = (rsb.masterIndex + i) % n // Update master index to the next available Redis client
-			zap.L().Info("Updated redis master index", zap.Int("masterIndex", rsb.masterIndex))
+		} else {
+			if i > 0 {
+				rsb.masterIndex = index // Update master index to the next available Redis client
+				zap.L().Info("Updated redis master index", zap.Int("masterIndex", rsb.masterIndex))
+			}
 			return nil // Exit the loop if processing is successful
 		}
 	}
@@ -925,4 +927,3 @@ func getAllBackendAddresses(backend Backend) []string {
 
 	return r
 }
-
