@@ -134,6 +134,21 @@ func (ctf *ClientTransportFactory) CreateUDPClientTransport(host string, port in
 	}
 }
 
+func (ctf *ClientTransportFactory) CreateUDPClientTransportWithConn(host string, port int, conn *net.UDPConn) (ClientTransport, error) {
+	key := fmt.Sprintf("udp:%s:%d:%p", host, port, conn)
+	if client, ok := ctf.clientTransports[key]; ok {
+		return client, nil
+	}
+	client, err := NewUDPClientTransportWithConn(host, port, conn)
+
+	if err == nil {
+		ctf.clientTransports[key] = client
+		return client, nil
+	} else {
+		return nil, err
+	}
+}
+
 // CreateTCPClientTransport create a TCP client transport with host and port
 // localAddress is the local address to bind to
 func (ctf *ClientTransportFactory) CreateTCPClientTransport(host string, port int, localAddress string, connectionEstablished ConnectionEstablishedFunc) (ClientTransport, error) {
@@ -372,8 +387,8 @@ func (c *ClientTransportMgr) createClientTransport(protocol string, host string,
 	if protocol == "udp" {
 		serverTransport, success := c.selfLearnRoute.GetRoute(host, protocol)
 		if success && serverTransport != nil {
-			if udpServerTransport, ok := serverTransport.(*UDPServerTransport); ok {
-				client, err = NewUDPClientTransportWithConn(host, port, udpServerTransport.conn)
+			if udpServerTransport, ok := serverTransport.(*UDPServerTransport); ok {				
+				client, err = clientTransportFactory.CreateUDPClientTransportWithConn(host, port, udpServerTransport.conn)
 			}
 		}
 
