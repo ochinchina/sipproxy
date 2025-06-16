@@ -833,6 +833,49 @@ func (m *Message) GetClientTransaction() (string, error) {
 
 }
 
+func (m *Message) GetSessionId() (string, error) {
+	callId, err := m.GetCallID()
+	if err != nil {
+		return "", err
+	}
+	fromSpec, err := m.GetFrom()
+	if err != nil {
+		return "", err
+	}
+
+	to, err := m.GetTo()
+
+	if err != nil {
+		return "", err
+	}
+
+	from_addr, err := fromSpec.GetAddrSpec()
+	if err != nil {
+		return "", err
+	}
+	to_addr, err := to.GetAddrSpec()
+	if err != nil {
+		return "", err
+	}
+	from_addr_s, err := m.getDialogAddr(from_addr)
+	if err != nil {
+		return "", err
+	}
+	to_addr_s, err := m.getDialogAddr(to_addr)
+	if err != nil {
+		return "", err
+	}
+	if from_addr_s < to_addr_s {
+		return NewDialog(callId,
+			from_addr_s,
+			to_addr_s).String(), nil
+	} else {
+		return NewDialog(callId,
+			to_addr_s,
+			from_addr_s).String(), nil
+	}
+}
+
 // When a request is received from the network by the server, it has to
 // be matched to an existing transaction.  This is accomplished in the
 // following manner.
@@ -855,9 +898,6 @@ func (m *Message) GetClientTransaction() (string, error) {
 //     transaction, except for ACK, where the method of the request
 //     that created the transaction is INVITE.
 func (m *Message) GetServerTransaction() (string, error) {
-	//if m.IsResponse() {
-	//	return "", fmt.Errorf("no server transaction for response")
-	//}
 
 	// Get the top Via Branch
 	branch, err := m.GetTopViaBranch()

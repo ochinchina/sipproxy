@@ -364,3 +364,39 @@ func TestGetServerTransaction(t *testing.T) {
 
 }
 
+func TestSessionId(t *testing.T) {
+	msgs := []string{`INVITE urn:service:sos SIP/2.0\r\nTo: <urn:service:sos>\r\nFrom: <sip:+351964901328@ims.mnc006.mcc268.3gppnetwork.org>;tag=0302e02c30690d19a70e020cde276590\r\nCall-ID: 4cfec4f1487431530e5933f1e7820485\r\nCSeq: 1 INVITE\r\nMax-Forwards: 69\r\nVia: SIP/2.0/UDP 10.244.139.184:5060;branch=z9hG4bK24e14040b017\r\nVia: SIP/2.0/UDP 10.111.173.228:5060;branch=z9hG4bK92a6cfb335305d078f618e6eb40627e7k555555yaaaaacaaaaaaaaaaaaa3Zqkv7a5deomaibaaiaiaaaaacqaaaaaabaaaaaaa\r\nVia: SIP/2.0/TCP 10.111.173.230:5060;branch=z9hG4bKa700e63a0ef7cf7e20aeb6f146e118bak555555yaaaaaeaaaaaaaaaaaaa3Zqkv7armbuklibaaiaiaaaaacqaaaaaaaaaaaaaa\r\nRecord-Route: <sip:10.244.139.184:5060;lr>\r\nRecord-Route: <sip:3Zqkv71cWaeCoYZRUaaaaaVJi5GebabaeaaaaahD0tFtobTKmeaaaaaatel%3A%2B351964901328@vecscftst1.lab.ims.telecom.pt:5060;maddr=10.111.173.228;lr>\r\nRecord-Route: <sip:3Zqkv71cWacGaaaacaaaaaF4RGNd%24k4jWaaaaaaaaaaaaaaaafaaaaaa4264264304@veatftst1.lab.ims.telecom.pt:5060;maddr=10.111.173.230;lr>\r\nContent-Length: 0\r\n\r\n`,
+		`SIP/2.0 100 Trying\r\nCSeq: 1 INVITE\r\nCall-ID: 4cfec4f1487431530e5933f1e7820485\r\nFrom: <sip:+351964901328@ims.mnc006.mcc268.3gppnetwork.org>;tag=0302e02c30690d19a70e020cde276590\r\nTo: <urn:service:sos>\r\nVia: SIP/2.0/UDP 10.244.139.184:5060;branch=z9hG4bK24e14040b017,SIP/2.0/UDP 10.111.173.228:5060;branch=z9hG4bK92a6cfb335305d078f618e6eb40627e7k555555yaaaaacaaaaaaaaaaaaa3Zqkv7a5deomaibaaiaiaaaaacqaaaaaabaaaaaaa,SIP/2.0/TCP 10.111.173.230:5060;branch=z9hG4bKa700e63a0ef7cf7e20aeb6f146e118bak555555yaaaaaeaaaaaaaaaaaaa3Zqkv7armbuklibaaiaiaaaaacqaaaaaaaaaaaaaa\r\nContent-Length: 0\r\n\r\n`,
+		`CANCEL urn:service:sos SIP/2.0\r\nTo: <urn:service:sos>\r\nFrom: <sip:+351964901328@ims.mnc006.mcc268.3gppnetwork.org>;tag=0302e02c30690d19a70e020cde276590\r\nCall-ID: 4cfec4f1487431530e5933f1e7820485\r\nCSeq: 1 CANCEL\r\nMax-Forwards: 69\r\nVia: SIP/2.0/UDP 10.244.139.184:5060;branch=z9hG4bK8379230904f4\r\nVia: SIP/2.0/UDP 10.111.173.228:5060;branch=z9hG4bK92a6cfb335305d078f618e6eb40627e7k555555yaaaaacaaaaaaaaaaaaa3Zqkv7a5deomaibaaiaiaaaaacqaaaaaabaaaaaaa\r\nContent-Length: 0\r\n\r\n`,
+		`SIP/2.0 200 OK\r\nCSeq: 1 CANCEL\r\nCall-ID: 4cfec4f1487431530e5933f1e7820485\r\nFrom: <sip:+351964901328@ims.mnc006.mcc268.3gppnetwork.org>;tag=0302e02c30690d19a70e020cde276590\r\nTo: <urn:service:sos>;tag=LRF_cd99ae1\r\nVia: SIP/2.0/UDP 10.244.139.184:5060;branch=z9hG4bK8379230904f4,SIP/2.0/UDP 10.111.173.228:5060;branch=z9hG4bK92a6cfb335305d078f618e6eb40627e7k555555yaaaaacaaaaaaaaaaaaa3Zqkv7a5deomaibaaiaiaaaaacqaaaaaabaaaaaaa\r\nContent-Length: 0\r\n\r\n`,
+		`ACK urn:service:sos SIP/2.0\r\nTo: <urn:service:sos>;tag=LRF_cd99ae1\r\nFrom: <sip:+351964901328@ims.mnc006.mcc268.3gppnetwork.org>;tag=0302e02c30690d19a70e020cde276590\r\nCall-ID: 4cfec4f1487431530e5933f1e7820485\r\nCSeq: 1 ACK\r\nMax-Forwards: 70\r\nContent-Length: 0\r\nVia: SIP/2.0/UDP 10.111.173.228:5060;branch=z9hG4bK92a6cfb335305d078f618e6eb40627e7k555555yaaaaacaaaaaaaaaaaaa3Zqkv7a5deomaibaaiaiaaaaacqaaaaaabaaaaaaa\r\nRoute: <sip:lrf.sip.lab.ims.telecom.pt;lr>\r\n\r\n`,
+		`SIP/2.0 487 Request Terminated\r\nCSeq: 1 INVITE\r\nCall-ID: 4cfec4f1487431530e5933f1e7820485\r\nFrom: <sip:+351964901328@ims.mnc006.mcc268.3gppnetwork.org>;tag=0302e02c30690d19a70e020cde276590\r\nTo: <urn:service:sos>;tag=LRF_cd99ae1\r\nVia: SIP/2.0/UDP 10.244.139.184:5060;branch=z9hG4bK24e14040b017,SIP/2.0/UDP 10.111.173.228:5060;branch=z9hG4bK92a6cfb335305d078f618e6eb40627e7k555555yaaaaacaaaaaaaaaaaaa3Zqkv7a5deomaibaaiaiaaaaacqaaaaaabaaaaaaa,SIP/2.0/TCP 10.111.173.230:5060;branch=z9hG4bKa700e63a0ef7cf7e20aeb6f146e118bak555555yaaaaaeaaaaaaaaaaaaa3Zqkv7armbuklibaaiaiaaaaacqaaaaaaaaaaaaaa\r\nContent-Length: 0\r\n\r\n`,
+	}
+
+	fmt.Println(msgs[0])
+
+	msg1, err := ParseMessage(create_reader_from_string(strings.ReplaceAll(msgs[0], "\\r\\n", "\r\n")))
+	if err != nil {
+		t.Error(err)
+	}
+	fmt.Println(msg1)
+	sessionId1, err := msg1.GetSessionId()
+	if err != nil {
+		t.Error(err)
+	}
+	fmt.Println(sessionId1)
+	for i := range 3 {
+		msg, err := ParseMessage(create_reader_from_string(strings.ReplaceAll(msgs[i], "\\r\\n", "\r\n")))
+		if err != nil {
+			t.Error(err)
+		}
+		sessionId, err := msg.GetSessionId()
+		if err != nil {
+			t.Error(err)
+		}
+		if sessionId != sessionId1 {
+			t.Errorf("session id is not same")
+		}
+	}
+}
+

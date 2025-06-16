@@ -83,6 +83,7 @@ type ProxyConfig struct {
 	RedisSessionStore *RedisSessionStore `yaml:"redis-session-store,omitempty"`
 	// The listens is a list of listen configurations
 	Listens []ListenConfig
+
 	// The route is a list of destination and next hop
 	// The destination is a regular expression
 	Route []struct {

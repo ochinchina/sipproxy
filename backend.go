@@ -520,6 +520,7 @@ type RedisSessionBackendAddrMgr struct {
 
 	nextCleanTime int64
 }
+
 type CompositeSessionBasedBackend struct {
 	backends []SessionBasedBackend
 }
@@ -747,7 +748,6 @@ func (rsb *MasterSlaveRedisSessionBasedBackend) subscribeToBackendUpdates(rdb *r
 	for {
 		pubsub := rsb.doSubscribe(rdb)
 		if pubsub != nil {
-			defer pubsub.Close()
 			rsb.receiveSubscribeMessage(pubsub)
 			time.Sleep(time.Duration(rsb.retryTimeout) * time.Second) // Wait before retrying subscription
 		} else {
@@ -781,6 +781,8 @@ func (rsb *MasterSlaveRedisSessionBasedBackend) doSubscribe(rdb *redis.Client) *
 // receiveSubscribeMessage listens for messages on the Redis PubSub channel.
 // It processes each message by calling sessionBackendUpdated to handle the session updates.
 func (rsb *MasterSlaveRedisSessionBasedBackend) receiveSubscribeMessage(pubsub *redis.PubSub) {
+	defer pubsub.Close() // Ensure the PubSub is closed when done
+
 	for {
 		msg, err := pubsub.ReceiveMessage()
 		if err == nil {
@@ -927,3 +929,4 @@ func getAllBackendAddresses(backend Backend) []string {
 
 	return r
 }
+

@@ -11,12 +11,6 @@ import (
 	"go.uber.org/zap"
 )
 
-type BackendChangeEvent struct {
-	action  string
-	backend Backend
-	parent  *RoundRobinBackend
-}
-
 type ProxyItem struct {
 	sync.Mutex
 	transports []ServerTransport
@@ -25,11 +19,7 @@ type ProxyItem struct {
 	msgHandler MessageHandler
 }
 
-type BackendWithParent struct {
-	backend Backend
-	parent  *RoundRobinBackend
-}
-
+// MyName is a structure to hold the name and patterns for matching SIP messages
 type MyName struct {
 	names    []string
 	patterns []*regexp.Regexp
@@ -333,30 +323,13 @@ func (p *Proxy) handleSession(msg *Message) {
 		return
 	}
 
-	if serverTransId, err := msg.GetServerTransaction(); err == nil {
-		if backend, err := p.sessionBackends.GetBackend(serverTransId); err == nil {
+	if sessionId, err := msg.GetSessionId(); err == nil {
+		if backend, err := p.sessionBackends.GetBackend(sessionId); err == nil {
 			addr := backend.GetAddress()
-			if msg.IsFinalResponse() {
-				zap.L().Info("transaction is finished, remove backend by transId", zap.String("backendAddr", addr), zap.String("serverTransaction", serverTransId))
-				p.sessionBackends.RemoveSession(serverTransId)
-			}
 
-			if method, err := msg.GetMethod(); err == nil {
-				switch method {
-				case "INVITE":
-					dialog, _ := msg.GetDialog()
-					if dialog != "" {
-						zap.L().Info("dialog is bind to backend", zap.String("backendAddr", addr), zap.String("dialog", dialog))
-						p.sessionBackends.AddBackend(dialog, backend, msg.GetExpires(0))
-					}
-				case "BYE":
-					dialog, _ := msg.GetDialog()
-					if dialog != "" {
-						zap.L().Info("dialog is closed", zap.String("backendAddr", addr), zap.String("dialog", dialog))
-						p.sessionBackends.RemoveSession(dialog)
-					}
-
-				}
+			if method, err := msg.GetMethod(); err == nil && method == "BYE" {
+				p.sessionBackends.RemoveSession(sessionId)
+				zap.L().Info("session is removed after getting a BYE message", zap.String("sessionId", sessionId), zap.String("backendAddr", addr))
 			}
 		}
 	}
@@ -385,18 +358,7 @@ func (p *Proxy) handleMessage(protocol string, msg *Message, backend Backend, vi
 	} else {
 		msg.PopVia()
 		host, port, transport, err := p.getNextReponseHop(msg)
-		// if the response of SUBSCRIBE to the backend
-		if method, err := msg.GetMethod(); err == nil && method == "SUBSCRIBE" {
-			if serverTransId, err := msg.GetServerTransaction(); err == nil {
-				if tmpBackend, err := p.sessionBackends.GetBackend(serverTransId); err == nil {
-					if dialog, err := msg.GetDialog(); err == nil {
-						zap.L().Info("bind the dialog to the response", zap.String("dialog", dialog), zap.String("backend", tmpBackend.GetAddress()))
 
-						p.sessionBackends.AddBackend(dialog, tmpBackend, msg.GetExpires(0))
-					}
-				}
-			}
-		}
 		if err != nil {
 			zap.L().Error("Fail to find the next hop for response", zap.String("message", msg.String()))
 		} else {
@@ -428,14 +390,8 @@ func (p *Proxy) sendToBackend(protocol string, msg *Message, preferBackend Backe
 	if backendItem == nil && preferBackend == nil {
 		zap.L().Error("Fail to find the backend for my message", zap.String("message", msg.String()))
 	} else {
-		transId, _ := msg.GetServerTransaction()
-		// find the backend by dialog or transaction
-		backend, transport, err := p.findBackendByDialog(protocol, msg)
-
-		if err != nil {
-			// if no backend is found by dialog, find the backend by transaction
-			backend, transport, err = p.findBackendByTransaction(protocol, msg)
-		}
+		sessionId, _ := msg.GetSessionId()
+		backend, transport, err := p.findBackendBySessionId(protocol, sessionId)
 
 		if err != nil && viaConfig != nil {
 			transport, _ = p.findTransportByViaConfig(viaConfig)
@@ -443,7 +399,6 @@ func (p *Proxy) sendToBackend(protocol string, msg *Message, preferBackend Backe
 
 		if backend == nil && preferBackend != nil {
 			backend = preferBackend
-			//transport, _ = p.findTransportByBackendAddr(backend.GetAddress(), protocol)
 		}
 
 		if transport == nil && backend != nil {
@@ -478,10 +433,10 @@ func (p *Proxy) sendToBackend(protocol string, msg *Message, preferBackend Backe
 		usedBackend, err := backend.Send(msg)
 		if err == nil {
 			zap.L().Debug("succeed to send the message to the backend", zap.String("backend", usedBackend.GetAddress()), zap.String("message", msg.String()))
-			if len(transId) > 0 {
+			if len(sessionId) > 0 {
 				// bind the backend with the transaction
-				zap.L().Info("bind server transaction with backend", zap.String("trandId", transId), zap.String("backend", usedBackend.GetAddress()))
-				p.sessionBackends.AddBackend(transId, usedBackend, msg.GetExpires(0))
+				zap.L().Info("bind session with backend", zap.String("sessionId", sessionId), zap.String("backend", usedBackend.GetAddress()))
+				p.sessionBackends.AddBackend(sessionId, usedBackend, msg.GetExpires(0))
 			}
 		} else {
 			zap.L().Error("Fail to send the message to the backend", zap.String("backend", backend.GetAddress()), zap.String("message", msg.String()))
@@ -489,55 +444,15 @@ func (p *Proxy) sendToBackend(protocol string, msg *Message, preferBackend Backe
 	}
 }
 
-// findBackendByDialog find the backend information by the message dialog
-func (p *Proxy) findBackendByDialog(protocol string, msg *Message) (Backend, ServerTransport, error) {
-	method, err := msg.GetMethod()
+func (p *Proxy) findBackendBySessionId(protocol string, sessionId string) (Backend, ServerTransport, error) {
+	// find the backend by session id
+	backend, err := p.sessionBackends.GetBackend(sessionId)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("fail to find backend by session id %s", sessionId)
 	}
-
-	// no dialog for INVITE and SUBSCRIBE message because they initialize the dialog
-	if method == "INVITE" || method == "SUBSCRIBE" {
-		return nil, nil, fmt.Errorf("no dialog for request %s", method)
-	}
-	dialog, err := msg.GetDialog()
-
-	if err != nil {
-		return nil, nil, err
-	}
-
-	backend, err := p.sessionBackends.GetBackend(dialog)
-	var transport ServerTransport = nil
-	if err == nil {
-		zap.L().Info("succeed to find backend by dialog", zap.String("backendAddr", backend.GetAddress()), zap.String("dialog", dialog))
-		transport, _ = p.findTransportByBackendAddr(backend.GetAddress(), protocol)
-	}
-	// remove the SUBSCRIBE initialized dialog if the Subscription-State is terminated in NOTIFY message
-	if method == "NOTIFY" && backend != nil {
-		if v, err := msg.GetHeaderValue("Subscription-State"); err == nil {
-			if s, ok := v.(string); ok && s == "terminated" {
-				zap.L().Info("remove the dialog because the Subscription-State is terminated in NOTIFY message", zap.String("dialog", dialog))
-				p.sessionBackends.RemoveSession(dialog)
-			}
-		}
-	}
-	return backend, transport, err
-}
-
-func (p *Proxy) findBackendByTransaction(protocol string, msg *Message) (Backend, ServerTransport, error) {
-	transId, err := msg.GetServerTransaction()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	backend, err := p.sessionBackends.GetBackend(transId)
-	if err == nil {
-		zap.L().Info("succeed to find backend by server transaction", zap.String("backendAddr", backend.GetAddress()), zap.String("transId", transId))
-		transport, _ := p.findTransportByBackendAddr(backend.GetAddress(), protocol)
-		return backend, transport, nil
-	} else {
-		return nil, nil, fmt.Errorf("fail to find backend by transaction %s", transId)
-	}
+	zap.L().Info("succeed to find backend by session id", zap.String("backendAddr", backend.GetAddress()), zap.String("sessionId", sessionId))
+	transport, _ := p.findTransportByBackendAddr(backend.GetAddress(), protocol)
+	return backend, transport, nil
 }
 
 func (p *Proxy) findTransportByViaConfig(viaConfig *ViaConfig) (ServerTransport, error) {
