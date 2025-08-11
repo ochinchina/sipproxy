@@ -553,6 +553,8 @@ func (rsb *RedisSessionBackendAddrMgr) SetBackendAddress(sessionId string, addre
 	rsb.Lock()
 	defer rsb.Unlock()
 
+	rsb.cleanExpiredSession()
+
 	rsb.sessionBackendAddrs[sessionId] = struct {
 		address string
 		expires int64
