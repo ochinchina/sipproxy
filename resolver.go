@@ -11,34 +11,70 @@ import (
 	"go.uber.org/zap"
 )
 
+type PreConfigSolvedHost struct {
+	nextResolveTime int64
+	IPs             []string
+}
 type PreConfigHostResolver struct {
 	// Name to IP mapping
-	hostIPs map[string]string
+	hostIPs map[string]*PreConfigSolvedHost
 }
 
 func NewPreConfigHostResolver() *PreConfigHostResolver {
-	return &PreConfigHostResolver{hostIPs: make(map[string]string)}
+	return &PreConfigHostResolver{hostIPs: make(map[string]*PreConfigSolvedHost)}
 }
 
 func (hr *PreConfigHostResolver) AddHostIP(name string, ip string) {
-	hr.hostIPs[name] = ip
+	if _, ok := hr.hostIPs[name]; !ok {
+		hr.hostIPs[name] = &PreConfigSolvedHost{
+			nextResolveTime: 0,
+			IPs:             make([]string, 0),
+		}
+	}
+	hr.hostIPs[name].IPs = append(hr.hostIPs[name].IPs, ip)
 }
 
 // GetIp get the IP by hostname
-func (hr *PreConfigHostResolver) GetIp(name string) (string, error) {
+func (hr *PreConfigHostResolver) GetIps(name string) ([]string, error) {
 
 	if net.ParseIP(name) != nil {
-		return name, nil
+		return []string{name}, nil
 	}
 
-	if ip, ok := hr.hostIPs[name]; ok {
-		return ip, nil
+	if _, ok := hr.hostIPs[name]; !ok {
+		hr.hostIPs[name] = &PreConfigSolvedHost{
+			nextResolveTime: time.Now().Unix(),
+			IPs:             make([]string, 0),
+		}
 	}
+
+	if hr.hostIPs[name].nextResolveTime > 0 && hr.hostIPs[name].nextResolveTime <= time.Now().Unix() {
+		hr.hostIPs[name].nextResolveTime = time.Now().Unix() + 10
+		ips, err := hr.doResolve(name)
+		if err == nil {
+			hr.hostIPs[name].IPs = ips
+		}
+	}
+
+	if ip, ok := hr.hostIPs[name]; ok && len(ip.IPs) > 0 {
+		return ip.IPs, nil
+	}
+
+	return []string{name}, nil
+}
+
+func (hr *PreConfigHostResolver) doResolve(name string) ([]string, error) {
 	ips, err := net.LookupIP(name)
-	if err == nil && len(ips) > 0 {
-		return ips[0].String(), nil
+	if err != nil {
+		return []string{name}, nil
 	}
-	return "", fmt.Errorf("fail to find IP of %s", name)
+
+	r := make([]string, 0)
+	for _, ip := range ips {
+		r = append(r, ip.String())
+	}
+
+	return r, nil
 }
 
 type IPResolvedCallback = func(hostname string, newIPs []string, removedIPs []string)

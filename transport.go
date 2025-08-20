@@ -41,6 +41,17 @@ func NewRawMessage(peerAddr string, peerPort int, from ServerTransport, received
 	}
 }
 
+func (rm *RawMessage) IsFromTCP() bool {
+	return rm.TcpConn != nil
+}
+
+func (rm *RawMessage) GetRemoteTcpAddr() string {
+	if rm.TcpConn == nil {
+		return ""
+	}
+	return rm.TcpConn.RemoteAddr().String()
+}
+
 type MessageHandler interface {
 	HandleRawMessage(msg *RawMessage)
 	//HandleMessage(msg *Message, backend Backend)
@@ -102,18 +113,17 @@ type ClientTransport interface {
 }
 
 type FailOverClientTransport struct {
-	primary   ClientTransport
-	secondary ClientTransport
+	primary     ClientTransport
+	secondaries []ClientTransport
 }
 
 type ClientTransportFactory struct {
+	resolver         *PreConfigHostResolver
 	clientTransports map[string]ClientTransport
 }
 
-var clientTransportFactory *ClientTransportFactory = NewClientTransportFactory()
-
-func NewClientTransportFactory() *ClientTransportFactory {
-	return &ClientTransportFactory{clientTransports: make(map[string]ClientTransport)}
+func NewClientTransportFactory(resolver *PreConfigHostResolver) *ClientTransportFactory {
+	return &ClientTransportFactory{resolver: resolver, clientTransports: make(map[string]ClientTransport)}
 }
 
 // CreateUDPClientTransport create a UDP client transport with host and port
@@ -124,13 +134,24 @@ func (ctf *ClientTransportFactory) CreateUDPClientTransport(host string, port in
 	if client, ok := ctf.clientTransports[key]; ok {
 		return client, nil
 	}
-	client, err := NewUDPClientTransport(host, port, localAddress)
 
-	if err == nil {
-		ctf.clientTransports[key] = client
-		return client, nil
-	} else {
+	ips, err := ctf.resolver.GetIps(host)
+	if err != nil {
 		return nil, err
+	}
+	clients := make([]ClientTransport, 0)
+	for _, ip := range ips {
+		client, err := NewUDPClientTransport(ip, port, localAddress)
+		if err == nil {
+			clients = append(clients, client)
+		}
+	}
+
+	if len(clients) > 0 {
+		ctf.clientTransports[key] = NewFailOverClientTransport(nil, clients)
+		return ctf.clientTransports[key], nil
+	} else {
+		return nil, fmt.Errorf("fail to create UDP client transport")
 	}
 }
 
@@ -139,13 +160,25 @@ func (ctf *ClientTransportFactory) CreateUDPClientTransportWithConn(host string,
 	if client, ok := ctf.clientTransports[key]; ok {
 		return client, nil
 	}
-	client, err := NewUDPClientTransportWithConn(host, port, conn)
-
-	if err == nil {
-		ctf.clientTransports[key] = client
-		return client, nil
-	} else {
+	ips, err := ctf.resolver.GetIps(host)
+	if err != nil {
+		zap.L().Error("fail to resolve host to IP for creating UDP client transport", zap.String("host", host))
 		return nil, err
+	}
+
+	clients := make([]ClientTransport, 0)
+	for _, ip := range ips {
+		client, err := NewUDPClientTransportWithConn(ip, port, conn)
+		if err == nil {
+			clients = append(clients, client)
+		}
+	}
+
+	if len(clients) > 0 {
+		ctf.clientTransports[key] = NewFailOverClientTransport(nil, clients)
+		return ctf.clientTransports[key], nil
+	} else {
+		return nil, fmt.Errorf("fail to create UDP client transport")
 	}
 }
 
@@ -156,13 +189,24 @@ func (ctf *ClientTransportFactory) CreateTCPClientTransport(host string, port in
 	if client, ok := ctf.clientTransports[key]; ok {
 		return client, nil
 	}
-	client, err := NewTCPClientTransport(host, port, localAddress, connectionEstablished)
-
-	if err == nil {
-		ctf.clientTransports[key] = client
-		return client, nil
+	ips, err := ctf.resolver.GetIps(host)
+	if err != nil || len(ips) == 0 {
+		zap.L().Error("fail to resolve host to IP for creating TCP client transport", zap.String("host", host))
+		return nil, fmt.Errorf("fail to resolve host to IP")
+	}
+	clients := make([]ClientTransport, 0)
+	for _, ip := range ips {
+		zap.L().Info("try to create TCP client transport", zap.String("ip", ip), zap.Int("port", port))
+		client, err := NewTCPClientTransport(ip, port, localAddress, connectionEstablished)
+		if err == nil {
+			clients = append(clients, client)
+		}
+	}
+	if len(clients) > 0 {
+		ctf.clientTransports[key] = NewFailOverClientTransport(nil, clients)
+		return ctf.clientTransports[key], nil
 	} else {
-		return nil, err
+		return nil, fmt.Errorf("fail to create TCP client transport")
 	}
 }
 
@@ -182,18 +226,22 @@ func (ctf *ClientTransportFactory) RemoveTCPClientTransport(host string, port in
 
 // NewFailOverClientTransport create a fail over client transport with primary and secondary
 // client transport
-func NewFailOverClientTransport(primary ClientTransport, secondary ClientTransport) *FailOverClientTransport {
-	return &FailOverClientTransport{primary: primary, secondary: secondary}
+func NewFailOverClientTransport(primary ClientTransport, secondaries []ClientTransport) *FailOverClientTransport {
+	return &FailOverClientTransport{secondaries: make([]ClientTransport, 0)}
 }
 
-// SetPrimary set the primary client transport
-func (fct *FailOverClientTransport) SetPrimary(primary ClientTransport) {
-	fct.primary = primary
+// Set primary client transport
+func (fct *FailOverClientTransport) SetPrimary(client ClientTransport) {
+	fct.primary = client
 }
 
-// SetSecondary set the secondary client transport
-func (fct *FailOverClientTransport) SetSecondary(secondary ClientTransport) {
-	fct.secondary = secondary
+// AddSecondary add the cient to back
+func (fct *FailOverClientTransport) AddSecondary(client ClientTransport) {
+	fct.secondaries = append(fct.secondaries, client)
+}
+
+func (fct *FailOverClientTransport) SetSecondaries(clients []ClientTransport) {
+	fct.secondaries = clients
 }
 
 // Send send message to the primary client transport, if failed, send to the secondary client transport
@@ -204,22 +252,32 @@ func (fct *FailOverClientTransport) Send(msg *Message) error {
 		if err == nil {
 			return nil
 		}
-		fct.primary = nil
 	}
-	if fct.secondary != nil {
-		return fct.secondary.Send(msg)
+	for _, client := range fct.secondaries {
+		err := client.Send(msg)
+		if err == nil {
+			return nil
+		}
 	}
 	return fmt.Errorf("fail to send message")
 }
 
 // IsConnected return true if the primary or secondary client transport is connected
 func (fct *FailOverClientTransport) IsConnected() bool {
-	return fct.primary != nil || fct.secondary != nil
+	return fct.primary != nil || len(fct.secondaries) > 0
 }
 
 // IsExpired return true if the primary or secondary client transport is expired
 func (fct *FailOverClientTransport) IsExpired() bool {
-	return (fct.primary != nil && fct.primary.IsExpired()) || (fct.secondary != nil && fct.secondary.IsExpired())
+	if fct.primary != nil && fct.primary.IsExpired() {
+		return true
+	}
+	for _, client := range fct.secondaries {
+		if client.IsExpired() {
+			return true
+		}
+	}
+	return false
 }
 
 type UDPClientTransport struct {
@@ -262,10 +320,6 @@ func NewUDPClientTransport(host string, port int, localAddress string) (*UDPClie
 
 func NewUDPClientTransportWithConn(host string, port int, conn *net.UDPConn) (*UDPClientTransport, error) {
 	return &UDPClientTransport{preConnected: false, conn: conn, localAddr: nil, remoteAddr: &net.UDPAddr{IP: net.ParseIP(host), Port: port}}, nil
-}
-
-func CreateUDPClientTransport(host string, port int, localAddress string) (ClientTransport, error) {
-	return clientTransportFactory.CreateUDPClientTransport(host, port, localAddress)
 }
 
 func (u *UDPClientTransport) connect() error {
@@ -311,18 +365,23 @@ func (u *UDPClientTransport) IsExpired() bool {
 
 type ClientTransportMgr struct {
 	sync.Mutex
-	transports            map[string]*FailOverClientTransport
-	lastCleanTime         int64
-	selfLearnRoute        *SelfLearnRoute
-	connectionEstablished ConnectionEstablishedFunc
+	transports             map[string]*FailOverClientTransport
+	lastCleanTime          int64
+	selfLearnRoute         *SelfLearnRoute
+	clientTransportFactory *ClientTransportFactory
+	connectionEstablished  ConnectionEstablishedFunc
 }
 
 // NewClientTransportMgr create a client transport manager object
-func NewClientTransportMgr(selfLearnRoute *SelfLearnRoute, connectionEstablished ConnectionEstablishedFunc) *ClientTransportMgr {
+func NewClientTransportMgr(clientTransportFactory *ClientTransportFactory,
+	selfLearnRoute *SelfLearnRoute,
+	connectionEstablished ConnectionEstablishedFunc) *ClientTransportMgr {
+
 	return &ClientTransportMgr{transports: make(map[string]*FailOverClientTransport),
-		lastCleanTime:         time.Now().Unix(),
-		selfLearnRoute:        selfLearnRoute,
-		connectionEstablished: connectionEstablished}
+		lastCleanTime:          time.Now().Unix(),
+		selfLearnRoute:         selfLearnRoute,
+		clientTransportFactory: clientTransportFactory,
+		connectionEstablished:  connectionEstablished}
 
 }
 
@@ -342,16 +401,16 @@ func (c *ClientTransportMgr) GetTransport(protocol string, host string, port int
 	zap.L().Info("get full address", zap.String("fullAddr", fullAddr))
 
 	if trans, ok := c.transports[fullAddr]; ok {
-		zap.L().Info("get client by full address", zap.String("fullAddr", fullAddr))
+		zap.L().Info("get client transport by full address", zap.String("fullAddr", fullAddr))
 		return trans, nil
 	}
 	trans, err := c.createClientTransport(protocol, host, port)
 	if err != nil {
-		zap.L().Info("fail to client by full address", zap.String("fullAddr", fullAddr))
+		zap.L().Info("fail to create client transport by full address", zap.String("fullAddr", fullAddr))
 		return nil, err
 	}
 	c.transports[fullAddr] = trans
-	zap.L().Info("create client by full address", zap.String("fullAddr", fullAddr))
+	zap.L().Info("succeed to create client by full address", zap.String("fullAddr", fullAddr))
 	return trans, nil
 }
 
@@ -384,39 +443,40 @@ func (c *ClientTransportMgr) createClientTransport(protocol string, host string,
 	var err error = nil
 	var localAddress string = c.getLocalAddress(host, protocol)
 
-	if protocol == "udp" {
+	switch protocol {
+	case "udp":
 		serverTransport, success := c.selfLearnRoute.GetRoute(host, protocol)
 		if success && serverTransport != nil {
-			if udpServerTransport, ok := serverTransport.(*UDPServerTransport); ok {				
-				client, err = clientTransportFactory.CreateUDPClientTransportWithConn(host, port, udpServerTransport.conn)
+			if udpServerTransport, ok := serverTransport.(*UDPServerTransport); ok {
+				client, err = c.clientTransportFactory.CreateUDPClientTransportWithConn(host, port, udpServerTransport.conn)
 			}
 		}
 
 		if client == nil || err != nil {
 			// if self learn route is available, use it to create a new UDP client transport
 			// if self learn route is not available, create a new UDP client transport
-			client, err = clientTransportFactory.CreateUDPClientTransport(host, port, localAddress)
+			client, err = c.clientTransportFactory.CreateUDPClientTransport(host, port, localAddress)
 		}
 		if err == nil {
-			return NewFailOverClientTransport(client, nil), nil
+			return NewFailOverClientTransport(client, make([]ClientTransport, 0)), nil
 		} else {
 			return nil, err
 		}
-	} else if protocol == "tcp" {
+	case "tcp":
 		addr := c.getFullAddr(protocol, host, port, "")
 		if trans, ok := c.transports[addr]; ok {
-			client = trans.secondary
+			return NewFailOverClientTransport(nil, trans.secondaries), nil
 		} else {
-			client, err = clientTransportFactory.CreateTCPClientTransport(host, port, localAddress, c.connectionEstablished)
+			client, err = c.clientTransportFactory.CreateTCPClientTransport(host, port, localAddress, c.connectionEstablished)
 			if err == nil {
-				c.transports[addr] = NewFailOverClientTransport(nil, client)
+				c.transports[addr] = NewFailOverClientTransport(nil, []ClientTransport{client})
+				return c.transports[addr], nil
 			} else {
 				return nil, err
 			}
 		}
-		return NewFailOverClientTransport(nil, client), nil
 
-	} else {
+	default:
 		return nil, fmt.Errorf("not support %s", protocol)
 	}
 
@@ -438,7 +498,7 @@ func (c *ClientTransportMgr) cleanExpiredTransport() {
 	var expiredTransports []string = make([]string, 0)
 
 	for key, transport := range c.transports {
-		if (transport.primary != nil && transport.primary.IsExpired()) || (transport.secondary != nil && transport.secondary.IsExpired()) {
+		if transport.IsExpired() {
 			expiredTransports = append(expiredTransports, key)
 		}
 	}

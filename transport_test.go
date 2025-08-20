@@ -7,8 +7,9 @@ import (
 
 func TestGetTransportFromClientTransportMgr(t *testing.T) {
 	selfLearnRoute := NewSelfLearnRoute()
+	resolver := NewPreConfigHostResolver()
 
-	clientTransMgr := NewClientTransportMgr(selfLearnRoute, func(conn net.Conn) {
+	clientTransMgr := NewClientTransportMgr(NewClientTransportFactory(resolver), selfLearnRoute, func(conn net.Conn) {
 	})
 
 	trans_1, err := clientTransMgr.GetTransport("udp", "192.168.100.96", 3088, "")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -108,19 +109,20 @@ func (p *MyName) isMyMessage(msg *Message) bool {
 }
 
 type Proxy struct {
-	myName              *MyName
-	listenConfigs       []ListenConfig
-	receivedSupport     bool
-	keepNextHopRoute    bool
-	preConfigRoute      *PreConfigRoute
-	resolver            *PreConfigHostResolver
-	items               []*ProxyItem
-	clientTransMgr      *ClientTransportMgr
-	selfLearnRoute      *SelfLearnRoute
-	mustRecordRoute     bool
-	msgChannel          chan *RawMessage
-	connAcceptedChannel chan net.Conn
-	sessionBackends     SessionBasedBackend
+	myName                 *MyName
+	listenConfigs          []ListenConfig
+	receivedSupport        bool
+	keepNextHopRoute       bool
+	preConfigRoute         *PreConfigRoute
+	resolver               *PreConfigHostResolver
+	items                  []*ProxyItem
+	clientTransMgr         *ClientTransportMgr
+	selfLearnRoute         *SelfLearnRoute
+	mustRecordRoute        bool
+	msgChannel             chan *RawMessage
+	connAcceptedChannel    chan net.Conn
+	sessionBackends        SessionBasedBackend
+	clientTransportFactory *ClientTransportFactory
 }
 
 func NewProxy(name string,
@@ -135,18 +137,19 @@ func NewProxy(name string,
 	redisSessionStore *RedisSessionStore) *Proxy {
 
 	proxy := &Proxy{myName: NewMyName(name),
-		listenConfigs:       listenConfigs,
-		receivedSupport:     receivedSupport,
-		keepNextHopRoute:    keepNextHopRoute,
-		preConfigRoute:      preConfigRoute,
-		resolver:            resolver,
-		items:               make([]*ProxyItem, 0),
-		clientTransMgr:      nil,
-		selfLearnRoute:      selfLearnRoute,
-		mustRecordRoute:     mustRecordRoute,
-		msgChannel:          make(chan *RawMessage, 10000),
-		connAcceptedChannel: make(chan net.Conn),
-		sessionBackends:     nil}
+		listenConfigs:          listenConfigs,
+		receivedSupport:        receivedSupport,
+		keepNextHopRoute:       keepNextHopRoute,
+		preConfigRoute:         preConfigRoute,
+		resolver:               resolver,
+		items:                  make([]*ProxyItem, 0),
+		clientTransMgr:         nil,
+		selfLearnRoute:         selfLearnRoute,
+		mustRecordRoute:        mustRecordRoute,
+		msgChannel:             make(chan *RawMessage, 10000),
+		connAcceptedChannel:    make(chan net.Conn),
+		sessionBackends:        nil,
+		clientTransportFactory: NewClientTransportFactory(resolver)}
 
 	for _, listenConf := range listenConfigs {
 		item, err := NewProxyItem(listenConf, receivedSupport, proxy, selfLearnRoute, proxy)
@@ -160,7 +163,7 @@ func NewProxy(name string,
 		serverTransport.Start(proxy)
 	}
 
-	proxy.clientTransMgr = NewClientTransportMgr(selfLearnRoute, connectionEstablished)
+	proxy.clientTransMgr = NewClientTransportMgr(proxy.clientTransportFactory, selfLearnRoute, connectionEstablished)
 
 	if redisSessionStore != nil {
 		findBackendByAddr := func(backendAddr string) (Backend, error) {
@@ -249,6 +252,9 @@ func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 		if strings.HasPrefix(host, "[") {
 			host = host[1 : len(host)-1]
 		}
+		if err != nil {
+			zap.L().Error("fail to get host/port of the next response", zap.String("error", err.Error()))
+		}
 		zap.L().Info("receive a message from tcp", zap.String("host", host), zap.Int("port", port))
 		if err == nil {
 			// create a transport for transaction in tcp connection
@@ -257,7 +263,11 @@ func (p *Proxy) handleRawMessage(rawMessage *RawMessage) (*Message, error) {
 				trans, err := p.clientTransMgr.GetTransport("tcp", host, port, transId)
 				if err == nil {
 					trans.primary, _ = NewTCPClientTransportWithConn(rawMessage.TcpConn)
+				} else {
+					zap.L().Error("fail to get tcp transport", zap.String("host", host), zap.Int("port", port), zap.String("transactionId", transId), zap.String("error", err.Error()))
 				}
+			} else {
+				zap.L().Error("fail to get client transaction", zap.String("error", err.Error()))
 			}
 		}
 	}
@@ -303,18 +313,26 @@ func (p *Proxy) isSameAddress(addr1 string, addr2 string) bool {
 		return true
 	}
 
-	ip1, err := p.resolver.GetIp(addr1)
+	ips1, err := p.resolver.GetIps(addr1)
 	if err != nil {
 		return false
 	}
 
-	ip2, err := p.resolver.GetIp(addr2)
+	ips2, err := p.resolver.GetIps(addr2)
 
 	if err != nil {
 		return false
 	}
 
-	return ip1 == ip2
+	for _, ip1 := range ips1 {
+		if slices.IndexFunc(ips2, func(ip2 string) bool {
+			return ip2 == ip1
+		}) != -1 {
+			return true
+		}
+	}
+
+	return false
 
 }
 
@@ -348,7 +366,7 @@ func (p *Proxy) handleMessage(protocol string, msg *Message, backend Backend, vi
 				p.addVia(msg, serverTrans)
 				p.addRecordRoute(msg, serverTrans)
 			}
-			p.sendMessage(host, port, transport, msg)
+			p.sendRequest(host, port, transport, msg)
 		} else if p.myName.isMyMessage(msg) {
 			zap.L().Info("it is my request")
 			p.sendToBackend(protocol, msg, backend, viaConfig)
@@ -362,7 +380,7 @@ func (p *Proxy) handleMessage(protocol string, msg *Message, backend Backend, vi
 		if err != nil {
 			zap.L().Error("Fail to find the next hop for response", zap.String("message", msg.String()))
 		} else {
-			p.sendMessage(host, port, transport, msg)
+			p.sendResponse(host, port, transport, msg)
 		}
 	}
 }
@@ -589,23 +607,26 @@ func (p *Proxy) findClientTransport(host string, port int, protocol string, tran
 			if localAddr == "" {
 				localAddr = ":0"
 			}
-			return CreateUDPClientTransport(host, port, localAddr)
+			return p.clientTransportFactory.CreateUDPClientTransport(host, port, localAddr)
 		}
 	}
 
 	return p.clientTransMgr.GetTransport(protocol, host, port, transId)
 }
 
-func (p *Proxy) sendMessage(host string, port int, protocol string, msg *Message) {
-	ip, err := p.resolver.GetIp(host)
-	if err != nil {
-		ip = host
+func (p *Proxy) sendRequest(host string, port int, protocol string, msg *Message) {
+
+	t, err := p.findClientTransport(host, port, protocol, "")
+	if err == nil {
+		t.Send(msg)
+	} else {
+		zap.L().Error("Fail to find the transport to send request message", zap.String("host", host), zap.Int("port", port), zap.String("transport", protocol), zap.String("message", msg.String()))
 	}
-	transId, err := msg.GetClientTransaction()
-	if err != nil {
-		transId = ""
-	}
-	t, err := p.findClientTransport(ip, port, protocol, transId)
+}
+
+func (p *Proxy) sendResponse(host string, port int, protocol string, msg *Message) {
+	transId, _ := msg.GetClientTransaction()
+	t, err := p.findClientTransport(host, port, protocol, transId)
 	if err == nil {
 		if msg.IsFinalResponse() {
 			// remove the transport from the client transaction manager
@@ -613,7 +634,7 @@ func (p *Proxy) sendMessage(host string, port int, protocol string, msg *Message
 		}
 		t.Send(msg)
 	} else {
-		zap.L().Error("Fail to find the transport", zap.String("host", host), zap.Int("port", port), zap.String("transport", protocol), zap.String("message", msg.String()))
+		zap.L().Error("Fail to find the transport to send response", zap.String("host", host), zap.Int("port", port), zap.String("transport", protocol), zap.String("message", msg.String()))
 	}
 }
 

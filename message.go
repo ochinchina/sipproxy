@@ -160,7 +160,7 @@ func parseRequestLine(line string) (*RequestLine, error) {
 		}
 		return &RequestLine{method: fields[0], requestURI: requestURI, version: fields[2]}, nil
 	} else {
-		return nil, errors.New("not a valid sip request")
+		return nil, errors.New("not a valid sip request line:" + line)
 	}
 }
 
@@ -209,7 +209,7 @@ func ParseMessage(reader *bufio.Reader) (*Message, error) {
 		} else {
 			pos := strings.IndexByte(line, ':')
 			if pos == -1 {
-				return nil, errors.New("not a valid sip request")
+				return nil, errors.New("not a valid sip header line:" + line)
 			}
 			name := line[0:pos]
 			value := strings.TrimSpace(line[pos+1:])
