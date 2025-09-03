@@ -355,11 +355,16 @@ func (p *Proxy) handleSession(msg *Message) {
 }
 
 func (p *Proxy) handleMessage(protocol string, msg *Message, backend Backend, viaConfig *ViaConfig) {
-	zap.L().Debug("Received a message", zap.String("host", msg.ReceivedFrom.GetAddress()), zap.Int("port", msg.ReceivedFrom.GetPort()), zap.String("message", msg.String()))
+	callId, _ := msg.GetCallID()
+	if zap.L().Core().Enabled(zap.DebugLevel) {
+		zap.L().Debug("Received a message", zap.String("localHost", msg.ReceivedFrom.GetAddress()), zap.Int("port", msg.ReceivedFrom.GetPort()), zap.String("message", msg.String()))
+	} else {
+		zap.L().Info("Received a message", zap.String("localHost", msg.ReceivedFrom.GetAddress()), zap.Int("port", msg.ReceivedFrom.GetPort()), zap.String("call-id", callId))
+	}
 	if msg.IsRequest() {
 		host, port, transport, err := p.getNextRequestHop(msg)
 		if err == nil {
-			zap.L().Info("Get next hop", zap.String("host", host), zap.Int("port", port), zap.String("transport", transport))
+			zap.L().Info("Get next hop for request", zap.String("host", host), zap.Int("port", port), zap.String("transport", transport))
 			serverTrans, ok := p.selfLearnRoute.GetRoute(host, protocol)
 
 			if ok {
@@ -368,7 +373,7 @@ func (p *Proxy) handleMessage(protocol string, msg *Message, backend Backend, vi
 			}
 			p.sendRequest(host, port, transport, msg)
 		} else if p.myName.isMyMessage(msg) {
-			zap.L().Info("it is my request")
+			zap.L().Info("it is my request", zap.String("call-id", callId))
 			p.sendToBackend(protocol, msg, backend, viaConfig)
 		} else {
 			zap.L().Error("Not my message, fail to route the message")
@@ -618,7 +623,10 @@ func (p *Proxy) sendRequest(host string, port int, protocol string, msg *Message
 
 	t, err := p.findClientTransport(host, port, protocol, "")
 	if err == nil {
-		t.Send(msg)
+		if t.Send(msg) != nil {
+			callId, _ := msg.GetCallID()
+			zap.L().Error("Fail to send message", zap.String("call-id", callId))
+		}
 	} else {
 		zap.L().Error("Fail to find the transport to send request message", zap.String("host", host), zap.Int("port", port), zap.String("transport", protocol), zap.String("message", msg.String()))
 	}

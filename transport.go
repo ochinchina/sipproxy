@@ -135,24 +135,11 @@ func (ctf *ClientTransportFactory) CreateUDPClientTransport(host string, port in
 		return client, nil
 	}
 
-	ips, err := ctf.resolver.GetIps(host)
-	if err != nil {
-		return nil, err
+	clientTransport, err := NewUDPClientTransport(ctf.resolver, host, port, localAddress)
+	if err == nil {
+		ctf.clientTransports[key] = clientTransport
 	}
-	clients := make([]ClientTransport, 0)
-	for _, ip := range ips {
-		client, err := NewUDPClientTransport(ip, port, localAddress)
-		if err == nil {
-			clients = append(clients, client)
-		}
-	}
-
-	if len(clients) > 0 {
-		ctf.clientTransports[key] = NewFailOverClientTransport(nil, clients)
-		return ctf.clientTransports[key], nil
-	} else {
-		return nil, fmt.Errorf("fail to create UDP client transport")
-	}
+	return clientTransport, err
 }
 
 func (ctf *ClientTransportFactory) CreateUDPClientTransportWithConn(host string, port int, conn *net.UDPConn) (ClientTransport, error) {
@@ -160,54 +147,26 @@ func (ctf *ClientTransportFactory) CreateUDPClientTransportWithConn(host string,
 	if client, ok := ctf.clientTransports[key]; ok {
 		return client, nil
 	}
-	ips, err := ctf.resolver.GetIps(host)
-	if err != nil {
-		zap.L().Error("fail to resolve host to IP for creating UDP client transport", zap.String("host", host))
-		return nil, err
+	clientTransport, err := NewUDPClientTransportWithConn(ctf.resolver, host, port, conn)
+	if err == nil {
+		ctf.clientTransports[key] = clientTransport
 	}
-
-	clients := make([]ClientTransport, 0)
-	for _, ip := range ips {
-		client, err := NewUDPClientTransportWithConn(ip, port, conn)
-		if err == nil {
-			clients = append(clients, client)
-		}
-	}
-
-	if len(clients) > 0 {
-		ctf.clientTransports[key] = NewFailOverClientTransport(nil, clients)
-		return ctf.clientTransports[key], nil
-	} else {
-		return nil, fmt.Errorf("fail to create UDP client transport")
-	}
+	return clientTransport, err
 }
 
 // CreateTCPClientTransport create a TCP client transport with host and port
-// localAddress is the local address to bind to
+// localAddress is the local address to be bind
 func (ctf *ClientTransportFactory) CreateTCPClientTransport(host string, port int, localAddress string, connectionEstablished ConnectionEstablishedFunc) (ClientTransport, error) {
 	key := fmt.Sprintf("tcp:%s:%d:%s", host, port, localAddress)
 	if client, ok := ctf.clientTransports[key]; ok {
 		return client, nil
 	}
-	ips, err := ctf.resolver.GetIps(host)
-	if err != nil || len(ips) == 0 {
-		zap.L().Error("fail to resolve host to IP for creating TCP client transport", zap.String("host", host))
-		return nil, fmt.Errorf("fail to resolve host to IP")
+
+	clientTransport, err := NewTCPClientTransport(ctf.resolver, host, port, localAddress, connectionEstablished)
+	if err == nil {
+		ctf.clientTransports[key] = clientTransport
 	}
-	clients := make([]ClientTransport, 0)
-	for _, ip := range ips {
-		zap.L().Info("try to create TCP client transport", zap.String("ip", ip), zap.Int("port", port))
-		client, err := NewTCPClientTransport(ip, port, localAddress, connectionEstablished)
-		if err == nil {
-			clients = append(clients, client)
-		}
-	}
-	if len(clients) > 0 {
-		ctf.clientTransports[key] = NewFailOverClientTransport(nil, clients)
-		return ctf.clientTransports[key], nil
-	} else {
-		return nil, fmt.Errorf("fail to create TCP client transport")
-	}
+	return clientTransport, err
 }
 
 // RemoveUDPClientTransport remove the UDP client transport with host and port
@@ -227,7 +186,7 @@ func (ctf *ClientTransportFactory) RemoveTCPClientTransport(host string, port in
 // NewFailOverClientTransport create a fail over client transport with primary and secondary
 // client transport
 func NewFailOverClientTransport(primary ClientTransport, secondaries []ClientTransport) *FailOverClientTransport {
-	return &FailOverClientTransport{secondaries: make([]ClientTransport, 0)}
+	return &FailOverClientTransport{primary: primary, secondaries: make([]ClientTransport, 0)}
 }
 
 // Set primary client transport
@@ -281,6 +240,9 @@ func (fct *FailOverClientTransport) IsExpired() bool {
 }
 
 type UDPClientTransport struct {
+	resolver *PreConfigHostResolver
+	host     string
+	port     int
 	// if the connection is pre-connected, if true, the conn is pre-connected connection, otherwise, it is not a pre-connected connection
 	preConnected bool
 	// conn       is the UDP connection to send message
@@ -289,12 +251,12 @@ type UDPClientTransport struct {
 	// - not nil, the conn is pre-connected connection, conn.Write() should be used to send message to remote
 	// - nil, the conn is not a pre-connected connection, conn.WriteToUDP() should be used to send message to remote
 	localAddr *net.UDPAddr
-	// remoteAddr is the remote address to send message to
-	remoteAddr *net.UDPAddr
 }
 
 type TCPClientTransport struct {
-	addr                  string
+	resolver              *PreConfigHostResolver
+	host                  string
+	port                  string
 	localAddress          string
 	reconnectable         bool
 	conn                  net.Conn
@@ -305,58 +267,124 @@ type TCPClientTransport struct {
 var SupportedProtocol = map[string]string{"udp": "udp", "tcp": "tcp"}
 
 // NewUDPClientTransport create a UDP client transport with host and port
-func NewUDPClientTransport(host string, port int, localAddress string) (*UDPClientTransport, error) {
-	raddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+func NewUDPClientTransport(resolver *PreConfigHostResolver, host string, port int, localAddress string) (*UDPClientTransport, error) {
+	/*raddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		zap.L().Error("Fail to resolve udp host address", zap.String("host", host), zap.Int("port", port), zap.String("error", err.Error()))
 		return nil, err
-	}
+	}*/
 	var laddr *net.UDPAddr = nil
 	if len(localAddress) > 0 {
 		laddr, _ = net.ResolveUDPAddr("udp", net.JoinHostPort(localAddress, "0"))
 	}
-	return &UDPClientTransport{preConnected: true, conn: nil, localAddr: laddr, remoteAddr: raddr}, nil
+	return &UDPClientTransport{resolver: resolver,
+		host:         host,
+		port:         port,
+		preConnected: true,
+		conn:         nil,
+		localAddr:    laddr}, nil
 }
 
-func NewUDPClientTransportWithConn(host string, port int, conn *net.UDPConn) (*UDPClientTransport, error) {
-	return &UDPClientTransport{preConnected: false, conn: conn, localAddr: nil, remoteAddr: &net.UDPAddr{IP: net.ParseIP(host), Port: port}}, nil
+func NewUDPClientTransportWithConn(resolver *PreConfigHostResolver, host string, port int, conn *net.UDPConn) (*UDPClientTransport, error) {
+	return &UDPClientTransport{resolver: resolver,
+		host:         host,
+		port:         port,
+		preConnected: false,
+		conn:         conn,
+		localAddr:    nil}, nil
 }
 
 func (u *UDPClientTransport) connect() error {
-	if u.conn == nil {
-		conn, err := net.DialUDP("udp", u.localAddr, u.remoteAddr)
-		if err != nil {
-			zap.L().Error("Fail to listen on UDP", zap.String("localAddr", u.localAddr.String()), zap.String("error", err.Error()))
-			return err
-		}
-		u.conn = conn
+	if u.conn != nil {
+		return nil
 	}
-	return nil
+	peerAddrs, err := u.getPeerAddrs()
+	if err != nil {
+		zap.L().Error("Fail to get remote addresses", zap.String("remoteHost", u.host), zap.Int("remotePort", u.port))
+		return err
+	}
+	for _, peerAddr := range peerAddrs {
+		conn, err := net.DialUDP("udp", u.localAddr, peerAddr)
+		if err == nil {
+			zap.L().Info("Succeed to make UDP connection", zap.String("localAddr", conn.LocalAddr().String()), zap.String("remoteAddr", conn.RemoteAddr().String()))
+			u.conn = conn
+			return nil
+		}
+		zap.L().Error("Fail to listen on UDP", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddr", peerAddr.String()), zap.String("error", err.Error()))
+	}
+	return fmt.Errorf("fail to listen on UDP" + u.localAddr.String())
+}
 
+func (u *UDPClientTransport) getPeerAddrs() ([]*net.UDPAddr, error) {
+	ips, err := u.resolveHost()
+	peerAddrs := make([]*net.UDPAddr, 0)
+	if err != nil {
+		return peerAddrs, err
+	}
+	for _, ip := range ips {
+		parsedIp := net.ParseIP(ip)
+		if parsedIp != nil {
+			peerAddrs = append(peerAddrs, &net.UDPAddr{IP: parsedIp, Port: u.port})
+		} else {
+			zap.L().Error("Fail to parse IP for UDP client transport", zap.String("IP", ip))
+		}
+	}
+	if len(peerAddrs) == 0 {
+		return peerAddrs, fmt.Errorf("no available remote addresses")
+	}
+	return peerAddrs, nil
+}
+
+func (u *UDPClientTransport) resolveHost() ([]string, error) {
+	if u.resolver != nil {
+		return u.resolver.GetIps(u.host)
+	}
+	return []string{u.host}, nil
 }
 
 // Send send message to the remote address
 func (u *UDPClientTransport) Send(msg *Message) error {
 	err := u.connect()
+	callId, _ := msg.GetCallID()
 	if err != nil {
+		zap.L().Error("Fail to make udp connection remote host", zap.String("remoteHost", u.host), zap.Int("remotePort", u.port), zap.Bool("request", msg.IsRequest()), zap.String("call-id", callId))
 		return err
 	}
 	b, err := msg.Bytes()
 	if err != nil {
+		zap.L().Error("Fail to encode the message", zap.String("message", msg.String()))
 		return err
 	}
-	if u.preConnected {
-		_, err = u.conn.Write(b)
-	} else {
-		_, err = u.conn.WriteToUDP(b, u.remoteAddr)
-	}
+	err = u.sendData(b)
+	remoteAddr := net.JoinHostPort(u.host, strconv.Itoa(u.port))
 	if err == nil {
-		zap.L().Debug("Succeed to send message through UDP", zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()))
+		if zap.L().Core().Enabled(zap.DebugLevel) {
+			zap.L().Debug("Succeed to send message through UDP", zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddr", remoteAddr), zap.String("message", msg.String()))
+		} else {
+			zap.L().Info("Succeed to send message through UDP", zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddr", remoteAddr), zap.Bool("request", msg.IsRequest()), zap.String("call-id", callId))
+		}
 	} else {
-		zap.L().Error("Fail to send message", zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddr", u.remoteAddr.String()), zap.String("message", msg.String()), zap.String("error", err.Error()))
+		zap.L().Error("Fail to send message", zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddr", remoteAddr), zap.String("message", msg.String()), zap.String("error", err.Error()))
 	}
 	return err
 
+}
+
+func (u *UDPClientTransport) sendData(b []byte) error {
+	if u.preConnected {
+		_, err := u.conn.Write(b)
+		return err
+	}
+	peerAddrs, err := u.getPeerAddrs()
+	if err == nil {
+		for _, peerAddr := range peerAddrs {
+			_, err = u.conn.WriteToUDP(b, peerAddr)
+			if err == nil {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("fail to send data to " + u.host + ":" + strconv.Itoa(u.port))
 }
 
 func (u *UDPClientTransport) IsExpired() bool {
@@ -509,9 +537,11 @@ func (c *ClientTransportMgr) cleanExpiredTransport() {
 }
 
 // NewTCPClientTransport create a TCP client transport with the specified host and port
-func NewTCPClientTransport(host string, port int, localAddress string, connectionEstablished ConnectionEstablishedFunc) (*TCPClientTransport, error) {
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	return &TCPClientTransport{addr: addr,
+func NewTCPClientTransport(resolver *PreConfigHostResolver, host string, port int, localAddress string, connectionEstablished ConnectionEstablishedFunc) (*TCPClientTransport, error) {
+	//addr := net.JoinHostPort(host, strconv.Itoa(port))
+	return &TCPClientTransport{resolver: resolver,
+		host:                  host,
+		port:                  strconv.Itoa(port),
 		localAddress:          localAddress,
 		reconnectable:         true,
 		conn:                  nil,
@@ -522,7 +552,10 @@ func NewTCPClientTransport(host string, port int, localAddress string, connectio
 
 func NewTCPClientTransportWithConn(conn net.Conn) (*TCPClientTransport, error) {
 	zap.L().Info("create TCPClientTransportWithConn", zap.String("remoteAddr", conn.RemoteAddr().String()))
-	return &TCPClientTransport{addr: conn.RemoteAddr().String(),
+	host, port, _ := net.SplitHostPort(conn.RemoteAddr().String())
+	return &TCPClientTransport{resolver: nil,
+		host:                  host,
+		port:                  port,
 		reconnectable:         false,
 		conn:                  conn,
 		expire:                time.Now().Unix() + 3600,
@@ -536,39 +569,66 @@ func (t *TCPClientTransport) Send(msg *Message) error {
 		return err
 	}
 
-	for i := 0; i < 2; i++ {
+	callId, _ := msg.GetCallID()
+	for range 2 {
 		if t.conn == nil && t.reconnectable {
-			laddr, _ := net.ResolveTCPAddr("tcp", net.JoinHostPort(t.localAddress, "0"))
-			raddr, _ := net.ResolveTCPAddr("tcp", t.addr)
-			zap.L().Info("Try to connect TCP server", zap.String("addr", t.addr), zap.String("localAddress", t.localAddress))
-			conn, err := net.DialTCP("tcp", laddr, raddr)
-			if err != nil {
-				zap.L().Error("Fail to connect tcp server", zap.String("addr", t.addr))
-				return err
-			} else {
-				zap.L().Info("Succeed to connect tcp server", zap.String("addr", t.addr))
-			}
-			t.conn = conn
-			if t.connectionEstablished != nil {
-				t.connectionEstablished(conn)
+			if t.createConnection() != nil {
+				continue
 			}
 		}
 		if t.conn == nil {
 			continue
 		}
-		n, err := t.conn.Write(b)
+		_, err := t.conn.Write(b)
 		if err == nil {
-			zap.L().Debug("Succeed to send message to TCP server", zap.String("addr", t.addr), zap.Int("bytesWritten", n))
+			zap.L().Info("Succeed to send message to TCP server", zap.String("host", t.host), zap.String("port", t.port), zap.Bool("request", msg.IsRequest()), zap.String("call-id", callId))
 			return nil
 		}
-		zap.L().Warn("Fail to send message to TCP server at this time, try it again", zap.String("addr", t.addr))
+		zap.L().Warn("Fail to send message to TCP server at this time, try it again", zap.String("host", t.host), zap.String("port", t.port), zap.Bool("request", msg.IsRequest()), zap.String("call-id", callId))
 		t.conn.Close()
 		t.conn = nil
 	}
-	zap.L().Error("Fail to send message to TCP server", zap.String("addr", t.addr))
-	return fmt.Errorf("fail to send message to %s", t.addr)
+	zap.L().Error("Fail to send message to TCP server", zap.String("host", t.host), zap.String("port", t.port), zap.Bool("request", msg.IsRequest()), zap.String("call-id", callId))
+	return fmt.Errorf("fail to send message to " + t.host + ":" + t.port)
 }
 
+func (t *TCPClientTransport) createConnection() error {
+	ips, err := t.resolveHost()
+
+	if err != nil {
+		return err
+	}
+	laddr, _ := net.ResolveTCPAddr("tcp", net.JoinHostPort(t.localAddress, "0"))
+	for _, ip := range ips {
+		addr := net.JoinHostPort(ip, t.port)
+		raddr, err := net.ResolveTCPAddr("tcp", addr)
+		if err != nil {
+			zap.L().Error("Fail to resolve ip to TCP Address", zap.String("ip", ip))
+			continue
+		}
+		zap.L().Info("Try to connect TCP server with ip", zap.String("host", t.host), zap.String("port", t.port), zap.String("hostIp", ip), zap.String("localAddress", t.localAddress))
+		conn, err := net.DialTCP("tcp", laddr, raddr)
+		if err != nil {
+			zap.L().Error("Fail to make TCP dial to remote address", zap.String("remoteAddress", raddr.String()))
+			continue
+		}
+		zap.L().Info("Succeed to connect tcp server", zap.String("host", t.host), zap.String("port", t.port), zap.String("hostIp", ip))
+		t.conn = conn
+		if t.connectionEstablished != nil {
+			t.connectionEstablished(conn)
+		}
+		return nil
+
+	}
+	zap.L().Error("Fail to connect tcp server", zap.String("host", t.host), zap.String("port", t.port))
+	return fmt.Errorf("fail to connect tcp server " + t.host + ":" + t.port)
+}
+func (t *TCPClientTransport) resolveHost() ([]string, error) {
+	if t.resolver != nil {
+		return t.resolver.GetIps(t.host)
+	}
+	return []string{t.host}, nil
+}
 func (t *TCPClientTransport) IsExpired() bool {
 	return t.expire > 0 && time.Now().Unix() > t.expire
 }
@@ -596,6 +656,7 @@ func NewUDPServerTransport(addr string, port int, receivedSupport bool, selfLear
 func (u *UDPServerTransport) Send(host string, port int, msg *Message) error {
 	remoteAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
+		zap.L().Error("Fail to resolve UDP address", zap.String("host", host), zap.Int("port", port))
 		return err
 	}
 	b, err := msg.Bytes()
@@ -603,10 +664,11 @@ func (u *UDPServerTransport) Send(host string, port int, msg *Message) error {
 		return err
 	}
 	n, err := u.conn.WriteToUDP(b, remoteAddr)
+	callId, _ := msg.GetCallID()
 	if err == nil {
-		zap.L().Info("Succeed to send message through UDP", zap.Int("length", n), zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddress", remoteAddr.String()))
+		zap.L().Info("Succeed to send message through UDP", zap.Int("length", n), zap.String("localAddr", u.conn.LocalAddr().String()), zap.String("remoteAddress", remoteAddr.String()), zap.String("call-id", callId))
 	} else {
-		zap.L().Error("Fail to send message", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddress", remoteAddr.String()), zap.String("error", err.Error()))
+		zap.L().Error("Fail to send message", zap.String("localAddr", u.localAddr.String()), zap.String("remoteAddress", remoteAddr.String()), zap.String("call-id", callId), zap.String("error", err.Error()))
 	}
 	return err
 }
