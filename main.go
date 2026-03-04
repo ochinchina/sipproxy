@@ -103,25 +103,24 @@ type ProxiesConfigure struct {
 	Hosts []HostIp
 }
 
+// LOG_LEVEL is the global log level for the application, it can be changed dynamically through the admin API
+var LOG_LEVEL = zap.NewAtomicLevel()
+
 func init() {
+	LOG_LEVEL.SetLevel(zap.DebugLevel)
 }
 
 func (vc *ViaConfig) String() string {
 	return fmt.Sprintf("%s://%s:%d", vc.Protocol, vc.Address, vc.Port)
 }
 
-func initLog(logFile string, logLevel string, logFormat string, logSize int, backups int) {
+func initLog(logFile string, logLevel zapcore.LevelEnabler, logFormat string, logSize int, backups int) {
 	var logEncoder zapcore.Encoder
 	if strings.ToLower(logFormat) == "json" {
 		logEncoder = zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
 	} else {
 		logEncoder = zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig())
 	}
-	level := zapcore.DebugLevel
-	level.Set(logLevel)
-	highPriority := zap.LevelEnablerFunc(func(lvl zapcore.Level) bool {
-		return lvl >= level
-	})
 
 	var out io.Writer = os.Stdout
 	if len(logFile) > 0 {
@@ -131,7 +130,7 @@ func initLog(logFile string, logLevel string, logFormat string, logSize int, bac
 			MaxBackups: backups}
 	}
 
-	core := zapcore.NewCore(logEncoder, zapcore.AddSync(out), highPriority)
+	core := zapcore.NewCore(logEncoder, zapcore.AddSync(out), logLevel)
 	logger := zap.New(core)
 	zap.ReplaceGlobals(logger)
 
@@ -194,18 +193,31 @@ func toKeepNextHopRoute(s string) bool {
 	return slices.Contains(possibleTrueValues, strings.ToLower(s))
 }
 
+func logLevelFromString(s string) zapcore.Level {
+	level := zapcore.InfoLevel
+	err := level.Set(s)
+	if err != nil {
+		return zapcore.InfoLevel
+	}
+	return level
+}
+
 func startProxies(c *cli.Context) error {
 	config, err := loadConfig(c.String("config"))
 	if err != nil {
 		return err
 	}
+	if config.Admin.Addr != "" {
+		startAdminServer(config.Admin.Addr)
+	}
 	strLevel := c.String("log-level")
+	LOG_LEVEL.SetLevel(logLevelFromString(strLevel))
 	fileName := c.String("log-file")
 	logSize := c.Int("log-size")
 	backups := c.Int("log-backups")
 	logFormat := c.String("log-format")
 	profilingPort := c.Int("profiling-port")
-	initLog(fileName, strLevel, logFormat, logSize, backups)
+	initLog(fileName, LOG_LEVEL, logFormat, logSize, backups)
 	startProfiling(profilingPort)
 
 	b, _ := yaml.Marshal(config)
@@ -222,6 +234,56 @@ func startProxies(c *cli.Context) error {
 	for {
 		time.Sleep(time.Duration(5 * time.Second))
 	}
+}
+
+// logLevelHandler handles the HTTP requests for getting and setting the log level.
+// GET /loglevel returns the current log level
+// POST /loglevel?level=LEVEL sets the log level to LEVEL, where LEVEL is one of the following: Debug, Info, Warn, Error, Fatal, Panic
+func logLevelHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, LOG_LEVEL.Level().String())
+
+	case http.MethodPost:
+		fallthrough
+	case http.MethodPut:
+		if s := r.FormValue("level"); s != "" {
+			level := zapcore.InfoLevel
+			err := level.Set(s)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintf(w, "invalid log level: %s", s)
+			} else {
+				LOG_LEVEL.SetLevel(level)
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintf(w, "log level set to %s", level.String())
+			}
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, "missing log level")
+		}
+	}
+}
+
+// startAdminServer starts the admin server for health check and log level management
+// The admin server listens on the specified address and provides the following endpoints:
+// GET /healthz returns 200 OK if the server is healthy
+// GET /loglevel returns the current log level
+// POST /loglevel?level=LEVEL sets the log level to LEVEL, where LEVEL is one of the following: Debug, Info, Warn, Error, Fatal, Panic
+func startAdminServer(addr string) {
+	zap.L().Info("Starting admin server", zap.String("address", addr))
+	httpServeMux := http.NewServeMux()
+	httpServeMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	httpServeMux.HandleFunc("/loglevel", logLevelHandler)
+
+	go func() {
+		http.ListenAndServe(addr, httpServeMux)
+	}()
 }
 
 func getDefaultDialogTimeout() int {
@@ -301,7 +363,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:  "log-level",
-				Usage: "one of following level: Trace, Debug, Info, Warn, Error, Fatal, Panic",
+				Usage: "one of following level: Debug, Info, Warn, Error, Fatal, Panic",
 			},
 			&cli.IntFlag{
 				Name:  "log-size",
